@@ -1,0 +1,20 @@
+{
+	"name": "indexes",
+	"properties": {
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"content": {
+			"query": "CREATE INDEX IDX_PuLocationKey ON [dw].[FactCabTrip] (PULocationKey);\nGO\n\nCREATE INDEX IDX_DOLocationKey ON [dw].[FactCabTrip] (DOLocationKey);\nGO",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "transportationdedicated",
+				"poolName": "transportationdedicated"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

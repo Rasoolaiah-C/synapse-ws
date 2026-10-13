@@ -1,0 +1,534 @@
+{
+	"name": "PL_Cab_Data_Ingestion",
+	"properties": {
+		"description": "End-to-end cab trip ingestion: generate raw data (notebook) -> clean (Spark job) -> load stage/dims/fact (stored procs) and build summary (Spark job) -> validate (stored proc + notebook).",
+		"activities": [
+			{
+				"name": "Log_Start",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"ActivityName": {
+							"value": "Log_Start",
+							"type": "String"
+						},
+						"RunStatus": {
+							"value": "Started",
+							"type": "String"
+						},
+						"RunMessage": {
+							"value": {
+								"value": "@concat('NumTrips=', string(pipeline().parameters.NumTrips))",
+								"type": "Expression"
+							},
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Generate_Raw_Cab_Trips",
+				"type": "SynapseNotebook",
+				"dependsOn": [
+					{
+						"activity": "Log_Start",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.02:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebook": {
+						"referenceName": "NB_Generate_Cab_Trips",
+						"type": "NotebookReference"
+					},
+					"parameters": {
+						"storage_account": {
+							"value": "externalstgaccmigration",
+							"type": "string"
+						},
+						"container": {
+							"value": "migrationcontainer",
+							"type": "string"
+						},
+						"num_trips": {
+							"value": {
+								"value": "@pipeline().parameters.NumTrips",
+								"type": "Expression"
+							},
+							"type": "int"
+						}
+					},
+					"snapshot": true,
+					"sparkPool": {
+						"referenceName": "transportation",
+						"type": "BigDataPoolReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Process_Cab_Data",
+				"type": "SparkJob",
+				"dependsOn": [
+					{
+						"activity": "Generate_Raw_Cab_Trips",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.02:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"sparkJob": {
+						"referenceName": "JBD_Process_Cab_Data",
+						"type": "SparkJobDefinitionReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Load_Stage_Cab_Trips",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Process_Cab_Data",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LoadStageCabTrips]",
+					"storedProcedureParameters": {
+						"StorageAccount": {
+							"value": "externalstgaccmigration",
+							"type": "String"
+						},
+						"Container": {
+							"value": "migrationcontainer",
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Load_DimLocation",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Load_Stage_Cab_Trips",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LoadDimLocation]"
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Load_FactCabTrip",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Load_DimLocation",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LoadFactCabTrip]"
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Validate_Fact_Load",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Load_FactCabTrip",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_ValidateFactLoad]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Build_Trip_Summary",
+				"type": "SparkJob",
+				"dependsOn": [
+					{
+						"activity": "Process_Cab_Data",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.02:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"sparkJob": {
+						"referenceName": "SJD_Build_Trip_Summary",
+						"type": "SparkJobDefinitionReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Validate_Cab_Outputs",
+				"type": "SynapseNotebook",
+				"dependsOn": [
+					{
+						"activity": "Build_Trip_Summary",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebook": {
+						"referenceName": "NB_Validate_Cab_Outputs",
+						"type": "NotebookReference"
+					},
+					"parameters": {
+						"storage_account": {
+							"value": "externalstgaccmigration",
+							"type": "string"
+						},
+						"container": {
+							"value": "migrationcontainer",
+							"type": "string"
+						}
+					},
+					"snapshot": true,
+					"sparkPool": {
+						"referenceName": "transportation",
+						"type": "BigDataPoolReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Log_Success",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Validate_Fact_Load",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Validate_Cab_Outputs",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"ActivityName": {
+							"value": "Log_Success",
+							"type": "String"
+						},
+						"RunStatus": {
+							"value": "Succeeded",
+							"type": "String"
+						},
+						"RunMessage": {
+							"value": {
+								"value": "@string(activity('Validate_Cab_Outputs').output.status.Output.result.exitValue)",
+								"type": "Expression"
+							},
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Log_Failure",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Log_Success",
+						"dependencyConditions": [
+							"Skipped"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"ActivityName": {
+							"value": "Log_Failure",
+							"type": "String"
+						},
+						"RunStatus": {
+							"value": "Failed",
+							"type": "String"
+						},
+						"RunMessage": {
+							"value": "One or more ingestion activities failed; see the pipeline run in Synapse Monitor.",
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Fail_Pipeline",
+				"type": "Fail",
+				"dependsOn": [
+					{
+						"activity": "Log_Failure",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"message": {
+						"value": "@concat('PL_Cab_Data_Ingestion failed. RunId: ', pipeline().RunId)",
+						"type": "Expression"
+					},
+					"errorCode": "500"
+				}
+			}
+		],
+		"parameters": {
+			"NumTrips": {
+				"type": "int",
+				"defaultValue": 5000
+			}
+		},
+		"folder": {
+			"name": "Ingestion"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW",
+			"CabDataIngestion"
+		],
+		"lastPublishTime": "2026-10-06T11:16:40Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}

@@ -1,0 +1,27 @@
+{
+	"name": "DS_SQL_DimRate",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"DBName": "transportationdedicated"
+			}
+		},
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW",
+			"DedicatedSQL"
+		],
+		"type": "AzureSqlDWTable",
+		"schema": [],
+		"typeProperties": {
+			"schema": "dw",
+			"table": "DimRate"
+		}
+	},
+	"type": "Microsoft.Synapse/workspaces/datasets"
+}

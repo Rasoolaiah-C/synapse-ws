@@ -1,0 +1,16 @@
+{
+	"name": "LS_ADLS_externalstgaccmigration",
+	"type": "Microsoft.Synapse/workspaces/linkedservices",
+	"properties": {
+		"description": "External ADLS Gen2 account for the migration project (replaces transportationsynapsemigration-WorkspaceDefaultStorage -> migrationmk).",
+		"annotations": [],
+		"type": "AzureBlobFS",
+		"typeProperties": {
+			"url": "https://externalstgaccmigration.dfs.core.windows.net/"
+		},
+		"connectVia": {
+			"referenceName": "AutoResolveIntegrationRuntime",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

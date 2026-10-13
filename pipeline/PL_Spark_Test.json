@@ -1,0 +1,352 @@
+{
+	"name": "PL_Spark_Test",
+	"properties": {
+		"description": "Spark assessment: generate sales/customer CSV + Parquet, transform to a city/product summary, reconcile CSV vs Parquet counts and copy the summary into the dedicated pool.",
+		"activities": [
+			{
+				"name": "Generate_CSV_And_Parquet",
+				"type": "SynapseNotebook",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebook": {
+						"referenceName": "NB_Read_Raw_Data",
+						"type": "NotebookReference"
+					},
+					"sparkPool": {
+						"referenceName": "transportation",
+						"type": "BigDataPoolReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Transform_Parquet",
+				"type": "SynapseNotebook",
+				"dependsOn": [
+					{
+						"activity": "Generate_CSV_And_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"notebook": {
+						"referenceName": "NB_Transform_Cab_Data",
+						"type": "NotebookReference"
+					},
+					"sparkPool": {
+						"referenceName": "transportation",
+						"type": "BigDataPoolReference"
+					},
+					"conf": {
+						"spark.dynamicAllocation.enabled": null,
+						"spark.dynamicAllocation.minExecutors": null,
+						"spark.dynamicAllocation.maxExecutors": null
+					},
+					"numExecutors": null
+				}
+			},
+			{
+				"name": "Count_CSV_Sales",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Generate_CSV_And_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "DelimitedTextSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"wildcardFileName": "*.csv",
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "DelimitedTextReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_CSV_Sales",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Count_Parquet_Sales",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Generate_CSV_And_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "ParquetSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"wildcardFileName": "*.parquet",
+							"enablePartitionDiscovery": false
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Parquet_Sales",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Count_CSV_Customers",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Generate_CSV_And_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "DelimitedTextSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"wildcardFileName": "*.csv",
+							"enablePartitionDiscovery": false
+						},
+						"formatSettings": {
+							"type": "DelimitedTextReadSettings"
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_CSV_Customers",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Count_Parquet_Customers",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Generate_CSV_And_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "ParquetSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"wildcardFileName": "*.parquet",
+							"enablePartitionDiscovery": false
+						}
+					},
+					"dataset": {
+						"referenceName": "DS_Parquet_Customers",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "Copy_Sales_Summary_To_SQL",
+				"type": "Copy",
+				"dependsOn": [
+					{
+						"activity": "Transform_Parquet",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "ParquetSource",
+						"storeSettings": {
+							"type": "AzureBlobFSReadSettings",
+							"recursive": true,
+							"wildcardFileName": "*.parquet",
+							"enablePartitionDiscovery": false
+						}
+					},
+					"sink": {
+						"type": "SqlDWSink",
+						"preCopyScript": "TRUNCATE TABLE dw.SalesByCityProduct",
+						"writeBehavior": "Insert",
+						"sqlWriterUseTableLock": false
+					},
+					"enableStaging": false,
+					"translator": {
+						"type": "TabularTranslator",
+						"typeConversion": true,
+						"typeConversionSettings": {
+							"allowDataTruncation": false,
+							"treatBooleanAsNumber": false
+						}
+					}
+				},
+				"inputs": [
+					{
+						"referenceName": "DS_Processed_Sales_By_City_Product",
+						"type": "DatasetReference"
+					}
+				],
+				"outputs": [
+					{
+						"referenceName": "DS_SQL_DynamicTable",
+						"type": "DatasetReference",
+						"parameters": {
+							"SchemaName": "dw",
+							"TableName": "SalesByCityProduct"
+						}
+					}
+				]
+			},
+			{
+				"name": "Check_Row_Counts",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "Count_CSV_Sales",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Count_Parquet_Sales",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Count_CSV_Customers",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Count_Parquet_Customers",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					},
+					{
+						"activity": "Copy_Sales_Summary_To_SQL",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@and(and(equals(activity('Count_CSV_Sales').output.count, activity('Count_Parquet_Sales').output.count), equals(activity('Count_CSV_Customers').output.count, activity('Count_Parquet_Customers').output.count)), greater(activity('Copy_Sales_Summary_To_SQL').output.rowsCopied, 0))",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "Fail_Row_Count_Mismatch",
+							"type": "Fail",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"message": {
+									"value": "@concat('CSV/Parquet reconciliation failed. sales csv=', string(activity('Count_CSV_Sales').output.count), ' parquet=', string(activity('Count_Parquet_Sales').output.count), '; customers csv=', string(activity('Count_CSV_Customers').output.count), ' parquet=', string(activity('Count_Parquet_Customers').output.count), '; summary rows copied=', string(activity('Copy_Sales_Summary_To_SQL').output.rowsCopied))",
+									"type": "Expression"
+								},
+								"errorCode": "400"
+							}
+						}
+					]
+				}
+			}
+		],
+		"folder": {
+			"name": "Assessment"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"SparkAssessment"
+		],
+		"lastPublishTime": "2026-10-06T11:16:32Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}

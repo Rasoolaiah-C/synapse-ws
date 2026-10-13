@@ -1,0 +1,97 @@
+{
+	"name": "PL_SQL_Object_Test",
+	"properties": {
+		"activities": [
+			{
+				"name": "SQL_Object_Assessment",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_CabDataAssessment]"
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Log_Object_Assessment",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "SQL_Object_Assessment",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"ActivityName": {
+							"value": "SQL_Object_Assessment",
+							"type": "String"
+						},
+						"RunStatus": {
+							"value": "Succeeded",
+							"type": "String"
+						},
+						"RunMessage": {
+							"value": "usp_CabDataAssessment executed",
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			}
+		],
+		"folder": {
+			"name": "Assessment"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW"
+		],
+		"lastPublishTime": "2026-10-06T11:16:23Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}
