@@ -1,0 +1,21 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"workspaceName": {
+			"value": "transportationmigration"
+		},
+		"LS_Serverless_SQL_connectionString": {
+			"value": "Integrated Security=False;Encrypt=True;Connection Timeout=30;Data Source=tcp:transportationmigration-ondemand.sql.azuresynapse.net,1433;Initial Catalog=master"
+		},
+		"transportationmigration-WorkspaceDefaultSqlServer_connectionString": {
+			"value": "Integrated Security=False;Encrypt=True;Connection Timeout=30;Data Source=tcp:transportationmigration.sql.azuresynapse.net,1433;Initial Catalog=@{linkedService().DBName}"
+		},
+		"LS_ADLS_externalstgaccmigration_properties_typeProperties_url": {
+			"value": "https://externalstgaccmigration.dfs.core.windows.net/"
+		},
+		"transportationmigration-WorkspaceDefaultStorage_properties_typeProperties_url": {
+			"value": "https://migrationaccms.dfs.core.windows.net"
+		}
+	}
+}

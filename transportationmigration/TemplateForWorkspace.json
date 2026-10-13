@@ -1,0 +1,3627 @@
+{
+	"$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"workspaceName": {
+			"type": "string",
+			"metadata": "Workspace name",
+			"defaultValue": "transportationmigration"
+		},
+		"LS_Serverless_SQL_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'LS_Serverless_SQL'",
+			"defaultValue": "Integrated Security=False;Encrypt=True;Connection Timeout=30;Data Source=tcp:transportationmigration-ondemand.sql.azuresynapse.net,1433;Initial Catalog=master"
+		},
+		"transportationmigration-WorkspaceDefaultSqlServer_connectionString": {
+			"type": "secureString",
+			"metadata": "Secure string for 'connectionString' of 'transportationmigration-WorkspaceDefaultSqlServer'",
+			"defaultValue": "Integrated Security=False;Encrypt=True;Connection Timeout=30;Data Source=tcp:transportationmigration.sql.azuresynapse.net,1433;Initial Catalog=@{linkedService().DBName}"
+		},
+		"LS_ADLS_externalstgaccmigration_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://externalstgaccmigration.dfs.core.windows.net/"
+		},
+		"transportationmigration-WorkspaceDefaultStorage_properties_typeProperties_url": {
+			"type": "string",
+			"defaultValue": "https://migrationaccms.dfs.core.windows.net"
+		}
+	},
+	"variables": {
+		"workspaceId": "[concat('Microsoft.Synapse/workspaces/', parameters('workspaceName'))]"
+	},
+	"resources": [
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_Cab_Data_Ingestion')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "End-to-end cab trip ingestion: generate raw data (notebook) -> clean (Spark job) -> load stage/dims/fact (stored procs) and build summary (Spark job) -> validate (stored proc + notebook).",
+				"activities": [
+					{
+						"name": "Log_Start",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"ActivityName": {
+									"value": "Log_Start",
+									"type": "String"
+								},
+								"RunStatus": {
+									"value": "Started",
+									"type": "String"
+								},
+								"RunMessage": {
+									"value": {
+										"value": "@concat('NumTrips=', string(pipeline().parameters.NumTrips))",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Generate_Raw_Cab_Trips",
+						"type": "SynapseNotebook",
+						"dependsOn": [
+							{
+								"activity": "Log_Start",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.02:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebook": {
+								"referenceName": "NB_Generate_Cab_Trips",
+								"type": "NotebookReference"
+							},
+							"parameters": {
+								"storage_account": {
+									"value": "externalstgaccmigration",
+									"type": "string"
+								},
+								"container": {
+									"value": "migrationcontainer",
+									"type": "string"
+								},
+								"num_trips": {
+									"value": {
+										"value": "@pipeline().parameters.NumTrips",
+										"type": "Expression"
+									},
+									"type": "int"
+								}
+							},
+							"snapshot": true,
+							"sparkPool": {
+								"referenceName": "transportation",
+								"type": "BigDataPoolReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Process_Cab_Data",
+						"type": "SparkJob",
+						"dependsOn": [
+							{
+								"activity": "Generate_Raw_Cab_Trips",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.02:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"sparkJob": {
+								"referenceName": "JBD_Process_Cab_Data",
+								"type": "SparkJobDefinitionReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Load_Stage_Cab_Trips",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Process_Cab_Data",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LoadStageCabTrips]",
+							"storedProcedureParameters": {
+								"StorageAccount": {
+									"value": "externalstgaccmigration",
+									"type": "String"
+								},
+								"Container": {
+									"value": "migrationcontainer",
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Load_DimLocation",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Load_Stage_Cab_Trips",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LoadDimLocation]"
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Load_FactCabTrip",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Load_DimLocation",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LoadFactCabTrip]"
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Validate_Fact_Load",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Load_FactCabTrip",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_ValidateFactLoad]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Build_Trip_Summary",
+						"type": "SparkJob",
+						"dependsOn": [
+							{
+								"activity": "Process_Cab_Data",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.02:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"sparkJob": {
+								"referenceName": "SJD_Build_Trip_Summary",
+								"type": "SparkJobDefinitionReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Validate_Cab_Outputs",
+						"type": "SynapseNotebook",
+						"dependsOn": [
+							{
+								"activity": "Build_Trip_Summary",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebook": {
+								"referenceName": "NB_Validate_Cab_Outputs",
+								"type": "NotebookReference"
+							},
+							"parameters": {
+								"storage_account": {
+									"value": "externalstgaccmigration",
+									"type": "string"
+								},
+								"container": {
+									"value": "migrationcontainer",
+									"type": "string"
+								}
+							},
+							"snapshot": true,
+							"sparkPool": {
+								"referenceName": "transportation",
+								"type": "BigDataPoolReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Log_Success",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Validate_Fact_Load",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Validate_Cab_Outputs",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"ActivityName": {
+									"value": "Log_Success",
+									"type": "String"
+								},
+								"RunStatus": {
+									"value": "Succeeded",
+									"type": "String"
+								},
+								"RunMessage": {
+									"value": {
+										"value": "@string(activity('Validate_Cab_Outputs').output.status.Output.result.exitValue)",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Log_Failure",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Log_Success",
+								"dependencyConditions": [
+									"Skipped"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"ActivityName": {
+									"value": "Log_Failure",
+									"type": "String"
+								},
+								"RunStatus": {
+									"value": "Failed",
+									"type": "String"
+								},
+								"RunMessage": {
+									"value": "One or more ingestion activities failed; see the pipeline run in Synapse Monitor.",
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Fail_Pipeline",
+						"type": "Fail",
+						"dependsOn": [
+							{
+								"activity": "Log_Failure",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"message": {
+								"value": "@concat('PL_Cab_Data_Ingestion failed. RunId: ', pipeline().RunId)",
+								"type": "Expression"
+							},
+							"errorCode": "500"
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"NumTrips": {
+						"type": "int",
+						"defaultValue": 5000
+					}
+				},
+				"folder": {
+					"name": "Ingestion"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"CabDataIngestion"
+				],
+				"lastPublishTime": "2026-10-06T11:16:40Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]",
+				"[concat(variables('workspaceId'), '/notebooks/NB_Generate_Cab_Trips')]",
+				"[concat(variables('workspaceId'), '/bigDataPools/transportation')]",
+				"[concat(variables('workspaceId'), '/sparkJobDefinitions/JBD_Process_Cab_Data')]",
+				"[concat(variables('workspaceId'), '/sparkJobDefinitions/SJD_Build_Trip_Summary')]",
+				"[concat(variables('workspaceId'), '/notebooks/NB_Validate_Cab_Outputs')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_MigrationMaster')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Master orchestration pipeline for the Synapse to Fabric migration accelerator ecosystem.",
+				"activities": [
+					{
+						"name": "Run_SQL_Object_Assessment",
+						"type": "ExecutePipeline",
+						"dependsOn": [],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_SQL_Object_Test",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_SQL_Data_Assessment",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_SQL_Object_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_SQL_Data_Assessment",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_Spark_Assessment",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_SQL_Data_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_Spark_Test",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_Serverless_Assessment",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_Spark_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_Serverless_Test",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_Cab_Data_Ingestion",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_Serverless_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_Cab_Data_Ingestion",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_SQL_Data_Validation",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_Cab_Data_Ingestion",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_SQL_Data_Validation",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					},
+					{
+						"name": "Run_Final_Validation",
+						"type": "ExecutePipeline",
+						"dependsOn": [
+							{
+								"activity": "Run_SQL_Data_Validation",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"pipeline": {
+								"referenceName": "PL_Validation",
+								"type": "PipelineReference"
+							},
+							"waitOnCompletion": true,
+							"parameters": {}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Master"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"MasterOrchestration"
+				],
+				"lastPublishTime": "2026-10-06T11:16:56Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/pipelines/PL_SQL_Object_Test')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_SQL_Data_Assessment')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_Spark_Test')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_Serverless_Test')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_Cab_Data_Ingestion')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_SQL_Data_Validation')]",
+				"[concat(variables('workspaceId'), '/pipelines/PL_Validation')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_SQL_Data_Assessment')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Assess real TransportDW SQL objects used by the Synapse migration accelerator.",
+				"activities": [
+					{
+						"name": "Count_NYCCabTrip_Green",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'stage.NYCCabTrip_Green' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [stage].[NYCCabTrip_Green]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_NYCCabTrip_Green",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_NYCCabTrip_Yellow",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_NYCCabTrip_Green",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'stage.NYCCabTrip_Yellow' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [stage].[NYCCabTrip_Yellow]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_NYCCabTrip_Yellow",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimCabType",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_NYCCabTrip_Yellow",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimCabType' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimCabType]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimCabType",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimLocation",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimCabType",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimLocation' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimLocation]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimLocation",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimPaymentType",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimLocation",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimPaymentType' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimPaymentType]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimPaymentType",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimRate",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimPaymentType",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimRate' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimRate]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimRate",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimTripType",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimRate",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimTripType' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimTripType]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimTripType",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_DimVendor",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimTripType",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.DimVendor' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[DimVendor]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_DimVendor",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Count_FactCabTrip",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Count_DimVendor",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT 'dw.FactCabTrip' AS ObjectName, COUNT_BIG(*) AS [RowCount] FROM [dw].[FactCabTrip]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_FactCabTrip",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Assessment"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"RealSQLAssessment"
+				],
+				"lastPublishTime": "2026-10-06T11:16:28Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_NYCCabTrip_Green')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_NYCCabTrip_Yellow')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimCabType')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimLocation')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimPaymentType')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimRate')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimTripType')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DimVendor')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_FactCabTrip')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_SQL_Data_Validation')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Validate row counts and connectivity across TransportDW staging and warehouse tables.",
+				"activities": [
+					{
+						"name": "Validate_Stage_Green",
+						"type": "Lookup",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT COUNT_BIG(*) AS GreenRowCount FROM [stage].[NYCCabTrip_Green]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_NYCCabTrip_Green",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Validate_Stage_Yellow",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Validate_Stage_Green",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT COUNT_BIG(*) AS YellowRowCount FROM [stage].[NYCCabTrip_Yellow]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_NYCCabTrip_Yellow",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Validate_Fact",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Validate_Stage_Yellow",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "AzureSqlSource",
+								"sqlReaderQuery": "SELECT COUNT_BIG(*) AS FactRowCount FROM [dw].[FactCabTrip]",
+								"partitionOption": "None"
+							},
+							"dataset": {
+								"referenceName": "DS_SQL_FactCabTrip",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": true
+						}
+					},
+					{
+						"name": "Validate_All_Tables",
+						"type": "ForEach",
+						"dependsOn": [
+							{
+								"activity": "Validate_Fact",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"items": {
+								"value": "@pipeline().parameters.TableList",
+								"type": "Expression"
+							},
+							"isSequential": false,
+							"batchCount": 4,
+							"activities": [
+								{
+									"name": "Count_Table_Rows",
+									"type": "Lookup",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.00:30:00",
+										"retry": 1,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "SqlDWSource",
+											"sqlReaderQuery": {
+												"value": "@concat('SELECT COUNT_BIG(*) AS [RowCount] FROM [', item().schema, '].[', item().table, ']')",
+												"type": "Expression"
+											},
+											"partitionOption": "None"
+										},
+										"dataset": {
+											"referenceName": "DS_SQL_DynamicTable",
+											"type": "DatasetReference",
+											"parameters": {
+												"SchemaName": {
+													"value": "@item().schema",
+													"type": "Expression"
+												},
+												"TableName": {
+													"value": "@item().table",
+													"type": "Expression"
+												}
+											}
+										},
+										"firstRowOnly": true
+									}
+								},
+								{
+									"name": "Log_Table_Row_Count",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "Count_Table_Rows",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.00:30:00",
+										"retry": 1,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+										"storedProcedureParameters": {
+											"PipelineName": {
+												"value": {
+													"value": "@pipeline().Pipeline",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().RunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ActivityName": {
+												"value": {
+													"value": "@concat('RowCount:', item().schema, '.', item().table)",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"RunStatus": {
+												"value": "Succeeded",
+												"type": "String"
+											},
+											"RunMessage": {
+												"value": {
+													"value": "@string(activity('Count_Table_Rows').output.firstRow.RowCount)",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"DBName": "transportationdedicated"
+										}
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"parameters": {
+					"TableList": {
+						"type": "array",
+						"defaultValue": [
+							{
+								"schema": "stage",
+								"table": "NYCCabTrip_Green"
+							},
+							{
+								"schema": "stage",
+								"table": "NYCCabTrip_Yellow"
+							},
+							{
+								"schema": "stage",
+								"table": "TaxiZoneLookup"
+							},
+							{
+								"schema": "dw",
+								"table": "DimCabType"
+							},
+							{
+								"schema": "dw",
+								"table": "DimLocation"
+							},
+							{
+								"schema": "dw",
+								"table": "DimPaymentType"
+							},
+							{
+								"schema": "dw",
+								"table": "DimRate"
+							},
+							{
+								"schema": "dw",
+								"table": "DimTripType"
+							},
+							{
+								"schema": "dw",
+								"table": "DimVendor"
+							},
+							{
+								"schema": "dw",
+								"table": "FactCabTrip"
+							},
+							{
+								"schema": "dw",
+								"table": "SalesByCityProduct"
+							},
+							{
+								"schema": "operation",
+								"table": "MetadataTableControl"
+							}
+						]
+					}
+				},
+				"folder": {
+					"name": "Validation"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"Validation"
+				],
+				"lastPublishTime": "2026-10-06T11:16:47Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_NYCCabTrip_Green')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_NYCCabTrip_Yellow')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_FactCabTrip')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DynamicTable')]",
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_SQL_Object_Test')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"activities": [
+					{
+						"name": "SQL_Object_Assessment",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_CabDataAssessment]"
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Log_Object_Assessment",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "SQL_Object_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"ActivityName": {
+									"value": "SQL_Object_Assessment",
+									"type": "String"
+								},
+								"RunStatus": {
+									"value": "Succeeded",
+									"type": "String"
+								},
+								"RunMessage": {
+									"value": "usp_CabDataAssessment executed",
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Assessment"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW"
+				],
+				"lastPublishTime": "2026-10-06T11:16:23Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_Serverless_Test')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Serverless SQL assessment: OPENROWSET over the CSV and Parquet sales files produced by PL_Spark_Test; fails if they do not reconcile.",
+				"activities": [
+					{
+						"name": "Serverless_Assessment",
+						"type": "Script",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"linkedServiceName": {
+							"referenceName": "LS_Serverless_SQL",
+							"type": "LinkedServiceReference"
+						},
+						"typeProperties": {
+							"scripts": [
+								{
+									"type": "Query",
+									"text": "SELECT 'CSV' AS TestType, COUNT(*) AS [RowCount]\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/csv/sales/*.csv',\n    FORMAT = 'CSV', PARSER_VERSION = '2.0', HEADER_ROW = TRUE\n) AS rows\nUNION ALL\nSELECT 'PARQUET', COUNT(*)\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/parquet/sales/*.parquet',\n    FORMAT = 'PARQUET'\n) AS rows;"
+								}
+							],
+							"scriptBlockExecutionTimeout": "00:30:00"
+						}
+					},
+					{
+						"name": "Check_Serverless_Counts",
+						"type": "IfCondition",
+						"dependsOn": [
+							{
+								"activity": "Serverless_Assessment",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@and(equals(activity('Serverless_Assessment').output.resultSets[0].rows[0].RowCount, activity('Serverless_Assessment').output.resultSets[0].rows[1].RowCount), greater(activity('Serverless_Assessment').output.resultSets[0].rows[0].RowCount, 0))",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "Fail_Serverless_Mismatch",
+									"type": "Fail",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat('Serverless CSV/Parquet counts do not reconcile: ', string(activity('Serverless_Assessment').output.resultSets[0].rows))",
+											"type": "Expression"
+										},
+										"errorCode": "400"
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Assessment"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"ServerlessAssessment"
+				],
+				"lastPublishTime": "2026-10-06T11:16:34Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_Serverless_SQL')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_Spark_Test')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Spark assessment: generate sales/customer CSV + Parquet, transform to a city/product summary, reconcile CSV vs Parquet counts and copy the summary into the dedicated pool.",
+				"activities": [
+					{
+						"name": "Generate_CSV_And_Parquet",
+						"type": "SynapseNotebook",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebook": {
+								"referenceName": "NB_Read_Raw_Data",
+								"type": "NotebookReference"
+							},
+							"sparkPool": {
+								"referenceName": "transportation",
+								"type": "BigDataPoolReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Transform_Parquet",
+						"type": "SynapseNotebook",
+						"dependsOn": [
+							{
+								"activity": "Generate_CSV_And_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.12:00:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"notebook": {
+								"referenceName": "NB_Transform_Cab_Data",
+								"type": "NotebookReference"
+							},
+							"sparkPool": {
+								"referenceName": "transportation",
+								"type": "BigDataPoolReference"
+							},
+							"conf": {
+								"spark.dynamicAllocation.enabled": null,
+								"spark.dynamicAllocation.minExecutors": null,
+								"spark.dynamicAllocation.maxExecutors": null
+							},
+							"numExecutors": null
+						}
+					},
+					{
+						"name": "Count_CSV_Sales",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Generate_CSV_And_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "DelimitedTextSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"wildcardFileName": "*.csv",
+									"enablePartitionDiscovery": false
+								},
+								"formatSettings": {
+									"type": "DelimitedTextReadSettings"
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_CSV_Sales",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Count_Parquet_Sales",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Generate_CSV_And_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "ParquetSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"wildcardFileName": "*.parquet",
+									"enablePartitionDiscovery": false
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_Parquet_Sales",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Count_CSV_Customers",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Generate_CSV_And_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "DelimitedTextSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"wildcardFileName": "*.csv",
+									"enablePartitionDiscovery": false
+								},
+								"formatSettings": {
+									"type": "DelimitedTextReadSettings"
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_CSV_Customers",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Count_Parquet_Customers",
+						"type": "Lookup",
+						"dependsOn": [
+							{
+								"activity": "Generate_CSV_And_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "ParquetSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"wildcardFileName": "*.parquet",
+									"enablePartitionDiscovery": false
+								}
+							},
+							"dataset": {
+								"referenceName": "DS_Parquet_Customers",
+								"type": "DatasetReference",
+								"parameters": {}
+							},
+							"firstRowOnly": false
+						}
+					},
+					{
+						"name": "Copy_Sales_Summary_To_SQL",
+						"type": "Copy",
+						"dependsOn": [
+							{
+								"activity": "Transform_Parquet",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.01:00:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"source": {
+								"type": "ParquetSource",
+								"storeSettings": {
+									"type": "AzureBlobFSReadSettings",
+									"recursive": true,
+									"wildcardFileName": "*.parquet",
+									"enablePartitionDiscovery": false
+								}
+							},
+							"sink": {
+								"type": "SqlDWSink",
+								"preCopyScript": "TRUNCATE TABLE dw.SalesByCityProduct",
+								"writeBehavior": "Insert",
+								"sqlWriterUseTableLock": false
+							},
+							"enableStaging": false,
+							"translator": {
+								"type": "TabularTranslator",
+								"typeConversion": true,
+								"typeConversionSettings": {
+									"allowDataTruncation": false,
+									"treatBooleanAsNumber": false
+								}
+							}
+						},
+						"inputs": [
+							{
+								"referenceName": "DS_Processed_Sales_By_City_Product",
+								"type": "DatasetReference",
+								"parameters": {}
+							}
+						],
+						"outputs": [
+							{
+								"referenceName": "DS_SQL_DynamicTable",
+								"type": "DatasetReference",
+								"parameters": {
+									"SchemaName": "dw",
+									"TableName": "SalesByCityProduct"
+								}
+							}
+						]
+					},
+					{
+						"name": "Check_Row_Counts",
+						"type": "IfCondition",
+						"dependsOn": [
+							{
+								"activity": "Count_CSV_Sales",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Count_Parquet_Sales",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Count_CSV_Customers",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Count_Parquet_Customers",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							},
+							{
+								"activity": "Copy_Sales_Summary_To_SQL",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"userProperties": [],
+						"typeProperties": {
+							"expression": {
+								"value": "@and(and(equals(activity('Count_CSV_Sales').output.count, activity('Count_Parquet_Sales').output.count), equals(activity('Count_CSV_Customers').output.count, activity('Count_Parquet_Customers').output.count)), greater(activity('Copy_Sales_Summary_To_SQL').output.rowsCopied, 0))",
+								"type": "Expression"
+							},
+							"ifFalseActivities": [
+								{
+									"name": "Fail_Row_Count_Mismatch",
+									"type": "Fail",
+									"dependsOn": [],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat('CSV/Parquet reconciliation failed. sales csv=', string(activity('Count_CSV_Sales').output.count), ' parquet=', string(activity('Count_Parquet_Sales').output.count), '; customers csv=', string(activity('Count_CSV_Customers').output.count), ' parquet=', string(activity('Count_Parquet_Customers').output.count), '; summary rows copied=', string(activity('Copy_Sales_Summary_To_SQL').output.rowsCopied))",
+											"type": "Expression"
+										},
+										"errorCode": "400"
+									}
+								}
+							]
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Assessment"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"SparkAssessment"
+				],
+				"lastPublishTime": "2026-10-06T11:16:32Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/notebooks/NB_Read_Raw_Data')]",
+				"[concat(variables('workspaceId'), '/bigDataPools/transportation')]",
+				"[concat(variables('workspaceId'), '/notebooks/NB_Transform_Cab_Data')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_CSV_Sales')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_Parquet_Sales')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_CSV_Customers')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_Parquet_Customers')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_Processed_Sales_By_City_Product')]",
+				"[concat(variables('workspaceId'), '/datasets/DS_SQL_DynamicTable')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/PL_Validation')]",
+			"type": "Microsoft.Synapse/workspaces/pipelines",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"activities": [
+					{
+						"name": "Validation_Checkpoint",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 1,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_CabDataValidation]"
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					},
+					{
+						"name": "Validate_Fact_Reconciliation",
+						"type": "SqlServerStoredProcedure",
+						"dependsOn": [
+							{
+								"activity": "Validation_Checkpoint",
+								"dependencyConditions": [
+									"Succeeded"
+								]
+							}
+						],
+						"policy": {
+							"timeout": "0.00:30:00",
+							"retry": 0,
+							"retryIntervalInSeconds": 30,
+							"secureOutput": false,
+							"secureInput": false
+						},
+						"userProperties": [],
+						"typeProperties": {
+							"storedProcedureName": "[operation].[usp_ValidateFactLoad]",
+							"storedProcedureParameters": {
+								"PipelineName": {
+									"value": {
+										"value": "@pipeline().Pipeline",
+										"type": "Expression"
+									},
+									"type": "String"
+								},
+								"PipelineRunId": {
+									"value": {
+										"value": "@pipeline().RunId",
+										"type": "Expression"
+									},
+									"type": "String"
+								}
+							}
+						},
+						"linkedServiceName": {
+							"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+							"type": "LinkedServiceReference",
+							"parameters": {
+								"DBName": "transportationdedicated"
+							}
+						}
+					}
+				],
+				"policy": {
+					"elapsedTimeMetric": {}
+				},
+				"folder": {
+					"name": "Validation"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"Validation"
+				],
+				"lastPublishTime": "2026-10-06T11:16:49Z"
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_CSV_Customers')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_externalstgaccmigration",
+					"type": "LinkedServiceReference"
+				},
+				"folder": {
+					"name": "Storage"
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"folderPath": "migration-test/csv/customers",
+						"fileSystem": "migrationcontainer"
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": true,
+					"quoteChar": "\""
+				},
+				"schema": [
+					{
+						"name": "CustomerId",
+						"type": "String"
+					},
+					{
+						"name": "CustomerName",
+						"type": "String"
+					},
+					{
+						"name": "City",
+						"type": "String"
+					}
+				]
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_ADLS_externalstgaccmigration')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_CSV_Sales')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_externalstgaccmigration",
+					"type": "LinkedServiceReference"
+				},
+				"folder": {
+					"name": "Storage"
+				},
+				"annotations": [],
+				"type": "DelimitedText",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"folderPath": "migration-test/csv/sales",
+						"fileSystem": "migrationcontainer"
+					},
+					"columnDelimiter": ",",
+					"escapeChar": "\\",
+					"firstRowAsHeader": true,
+					"quoteChar": "\""
+				},
+				"schema": [
+					{
+						"name": "SaleId",
+						"type": "String"
+					},
+					{
+						"name": "CustomerId",
+						"type": "String"
+					},
+					{
+						"name": "Product",
+						"type": "String"
+					},
+					{
+						"name": "Amount",
+						"type": "Int64"
+					}
+				]
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_ADLS_externalstgaccmigration')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_Parquet_Customers')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_externalstgaccmigration",
+					"type": "LinkedServiceReference"
+				},
+				"folder": {
+					"name": "Storage"
+				},
+				"annotations": [],
+				"type": "Parquet",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"folderPath": "migration-test/parquet/customers",
+						"fileSystem": "migrationcontainer"
+					},
+					"compressionCodec": "snappy"
+				},
+				"schema": [
+					{
+						"name": "CustomerId",
+						"type": "String"
+					},
+					{
+						"name": "CustomerName",
+						"type": "String"
+					},
+					{
+						"name": "City",
+						"type": "String"
+					}
+				]
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_ADLS_externalstgaccmigration')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_Parquet_Sales')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_externalstgaccmigration",
+					"type": "LinkedServiceReference"
+				},
+				"folder": {
+					"name": "Storage"
+				},
+				"annotations": [],
+				"type": "Parquet",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"folderPath": "migration-test/parquet/sales",
+						"fileSystem": "migrationcontainer"
+					},
+					"compressionCodec": "snappy"
+				},
+				"schema": [
+					{
+						"name": "SaleId",
+						"type": "String"
+					},
+					{
+						"name": "CustomerId",
+						"type": "String"
+					},
+					{
+						"name": "Product",
+						"type": "String"
+					},
+					{
+						"name": "Amount",
+						"type": "Int64"
+					}
+				]
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_ADLS_externalstgaccmigration')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_Processed_Sales_By_City_Product')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "LS_ADLS_externalstgaccmigration",
+					"type": "LinkedServiceReference"
+				},
+				"folder": {
+					"name": "Storage"
+				},
+				"annotations": [],
+				"type": "Parquet",
+				"typeProperties": {
+					"location": {
+						"type": "AzureBlobFSLocation",
+						"folderPath": "migration-test/processed/sales_by_city_product",
+						"fileSystem": "migrationcontainer"
+					},
+					"compressionCodec": "snappy"
+				},
+				"schema": [
+					{
+						"name": "City",
+						"type": "String"
+					},
+					{
+						"name": "Product",
+						"type": "String"
+					},
+					{
+						"name": "TotalAmount",
+						"type": "Int64"
+					}
+				]
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/LS_ADLS_externalstgaccmigration')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimCabType')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimCabType"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimLocation')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimLocation"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimPaymentType')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimPaymentType"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimRate')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimRate"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimTripType')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimTripType"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DimVendor')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "DimVendor"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_DynamicTable')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"parameters": {
+					"SchemaName": {
+						"type": "string"
+					},
+					"TableName": {
+						"type": "string"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"ParameterizedDataset",
+					"DynamicSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": {
+						"value": "@dataset().SchemaName",
+						"type": "Expression"
+					},
+					"table": {
+						"value": "@dataset().TableName",
+						"type": "Expression"
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_FactCabTrip')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "dw",
+					"table": "FactCabTrip"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_NYCCabTrip_Green')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "stage",
+					"table": "NYCCabTrip_Green"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/DS_SQL_NYCCabTrip_Yellow')]",
+			"type": "Microsoft.Synapse/workspaces/datasets",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				},
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"annotations": [
+					"MigrationAccelerator",
+					"TransportDW",
+					"DedicatedSQL"
+				],
+				"type": "AzureSqlDWTable",
+				"schema": [],
+				"typeProperties": {
+					"schema": "stage",
+					"table": "NYCCabTrip_Yellow"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/linkedServices/transportationmigration-WorkspaceDefaultSqlServer')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/LS_ADLS_externalstgaccmigration')]",
+			"type": "Microsoft.Synapse/workspaces/linkedServices",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "External ADLS Gen2 account for the migration project (replaces transportationsynapsemigration-WorkspaceDefaultStorage -> migrationmk).",
+				"annotations": [],
+				"type": "AzureBlobFS",
+				"typeProperties": {
+					"url": "[parameters('LS_ADLS_externalstgaccmigration_properties_typeProperties_url')]"
+				},
+				"connectVia": {
+					"referenceName": "AutoResolveIntegrationRuntime",
+					"type": "IntegrationRuntimeReference"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/LS_Serverless_SQL')]",
+			"type": "Microsoft.Synapse/workspaces/linkedServices",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Built-in serverless SQL pool of transportationmigration (workspace managed identity).",
+				"annotations": [],
+				"type": "AzureSqlDW",
+				"typeProperties": {
+					"connectionString": "[parameters('LS_Serverless_SQL_connectionString')]"
+				},
+				"connectVia": {
+					"referenceName": "AutoResolveIntegrationRuntime",
+					"type": "IntegrationRuntimeReference"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/transportationmigration-WorkspaceDefaultSqlServer')]",
+			"type": "Microsoft.Synapse/workspaces/linkedServices",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"parameters": {
+					"DBName": {
+						"type": "String"
+					}
+				},
+				"annotations": [],
+				"type": "AzureSqlDW",
+				"typeProperties": {
+					"connectionString": "[parameters('transportationmigration-WorkspaceDefaultSqlServer_connectionString')]"
+				},
+				"connectVia": {
+					"referenceName": "AutoResolveIntegrationRuntime",
+					"type": "IntegrationRuntimeReference"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/transportationmigration-WorkspaceDefaultStorage')]",
+			"type": "Microsoft.Synapse/workspaces/linkedServices",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"annotations": [],
+				"type": "AzureBlobFS",
+				"typeProperties": {
+					"url": "[parameters('transportationmigration-WorkspaceDefaultStorage_properties_typeProperties_url')]"
+				},
+				"connectVia": {
+					"referenceName": "AutoResolveIntegrationRuntime",
+					"type": "IntegrationRuntimeReference"
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/integrationRuntimes/AutoResolveIntegrationRuntime')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/TR_Schedule_MigrationTest')]",
+			"type": "Microsoft.Synapse/workspaces/triggers",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"annotations": [],
+				"runtimeState": "Stopped",
+				"pipelines": [
+					{
+						"pipelineReference": {
+							"referenceName": "PL_MigrationMaster",
+							"type": "PipelineReference"
+						},
+						"parameters": {}
+					}
+				],
+				"type": "ScheduleTrigger",
+				"typeProperties": {
+					"recurrence": {
+						"frequency": "Day",
+						"interval": 1,
+						"startTime": "2026-01-01T00:00:00Z",
+						"timeZone": "UTC"
+					}
+				}
+			},
+			"dependsOn": [
+				"[concat(variables('workspaceId'), '/pipelines/PL_MigrationMaster')]"
+			]
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/AutoResolveIntegrationRuntime')]",
+			"type": "Microsoft.Synapse/workspaces/integrationRuntimes",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"type": "Managed",
+				"typeProperties": {
+					"computeProperties": {
+						"location": "AutoResolve",
+						"dataFlowProperties": {
+							"computeType": "General",
+							"coreCount": 8,
+							"timeToLive": 0
+						}
+					}
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/WorkspaceSystemIdentity')]",
+			"type": "Microsoft.Synapse/workspaces/credentials",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"type": "ManagedIdentity",
+				"typeProperties": {}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/SQL_Serverless_CSV_OPENROWSET')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Migration accelerator serverless SQL fixture",
+				"folder": {
+					"name": "Serverless"
+				},
+				"content": {
+					"query": "-- Serverless SQL test: CSV generated by NB_Read_Raw_Data\nSELECT TOP 100 *\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/csv/sales/*.csv',\n    FORMAT = 'CSV',\n    PARSER_VERSION = '2.0',\n    HEADER_ROW = TRUE\n) AS rows;\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "master",
+						"poolName": "Built-in"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/SQL_Serverless_Parquet_OPENROWSET')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Migration accelerator serverless SQL fixture",
+				"folder": {
+					"name": "Serverless"
+				},
+				"content": {
+					"query": "-- Serverless SQL test: Parquet generated by NB_Read_Raw_Data\nSELECT TOP 100 *\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/parquet/sales/*.parquet',\n    FORMAT = 'PARQUET'\n) AS rows;\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "master",
+						"poolName": "Built-in"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/SQL_Serverless_Validation')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Migration accelerator serverless SQL fixture",
+				"folder": {
+					"name": "Serverless"
+				},
+				"content": {
+					"query": "-- Validation script for the migration test ecosystem.\n-- Run against the Built-in/serverless SQL pool after PL_Spark_Test has completed.\nSELECT 'CSV' AS TestType, COUNT(*) AS [RowCount]\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/csv/sales/*.csv',\n    FORMAT = 'CSV',\n    PARSER_VERSION = '2.0',\n    HEADER_ROW = TRUE\n) AS rows;\n\nSELECT 'PARQUET' AS TestType, COUNT(*) AS [RowCount]\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/parquet/sales/*.parquet',\n    FORMAT = 'PARQUET'\n) AS rows;\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "master",
+						"poolName": "Built-in"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/config_tables')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "TRUNCATE TABLE [operation].[MetadataTableControl]\n\n-------------------------------------------Green CAB\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n1,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-01',1,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-01.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-01.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n2,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-02',2,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-02.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-02.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n3,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-03',3,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-03.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-03.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n4,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-04',4,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-04.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-04.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n5,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-05',5,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-05.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-05.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n6,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2019-06',6,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-06.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-06.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n7,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-07',7,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-07.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-07.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n8,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-08',8,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-08.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-08.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n9,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-09',9,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-09.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-09.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n10,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-10',10,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-10.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-10.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n11,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-11',11,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-11.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-11.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n12,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2019-12',12,\n'HTTP',NULL,'trip-data/','green_tripdata_2019-12.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2019-12.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\n---------------------------------------------------------\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n13,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-01',13,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-01.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-01.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n14,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-02',14,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-02.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-02.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n15,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-03',15,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-03.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-03.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n16,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-04',16,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-04.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-04.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n17,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-05',17,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-05.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-05.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n18,'NYC Ride Analysis','HTTP to ADL2 - 1','green_tripdata_2020-06',18,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-06.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-06.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n19,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-07',19,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-07.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-07.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n20,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-08',20,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-08.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-08.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n21,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-09',21,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-09.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-09.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n22,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-10',22,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-10.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-10.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n23,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-11',23,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-11.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-11.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n24,'NYC Ride Analysis','HTTP to ADL2 - 2','green_tripdata_2020-12',24,\n'HTTP',NULL,'trip-data/','green_tripdata_2020-12.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/green','green_tripdata_2020-12.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n-------------------------------------------END - Green CAB\n\n----------------------------------------------------------\n------------------------------------------------Yellow CAB\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n25,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-01',25,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-01.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-01.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n26,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-02',26,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-02.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-02.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n27,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-03',27,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-03.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-03.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n28,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-04',28,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-04.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-04.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n29,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-05',29,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-05.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-05.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n30,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2019-06',30,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-06.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-06.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n31,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-07',31,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-07.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-07.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n32,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-08',32,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-08.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-08.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n33,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-09',33,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-09.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-09.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n34,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-10',34,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-10.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-10.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n35,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-11',35,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-11.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-11.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n36,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2019-12',36,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2019-12.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2019-12.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\n---------------------------------------------------------\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n37,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-01',37,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-01.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-01.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n38,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-02',38,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-02.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-02.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n39,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-03',39,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-03.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-03.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n40,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-04',40,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-04.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-04.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n41,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-05',41,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-05.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-05.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n42,'NYC Ride Analysis','HTTP to ADL2 - 1','yellow_tripdata_2020-06',42,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-06.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-06.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n43,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-07',43,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-07.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-07.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n44,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-08',44,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-08.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-08.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n45,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-09',45,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-09.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-09.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n46,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-10',46,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-10.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-10.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n47,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-11',47,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-11.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-11.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n48,'NYC Ride Analysis','HTTP to ADL2 - 2','yellow_tripdata_2020-12',48,\n'HTTP',NULL,'trip-data/','yellow_tripdata_2020-12.parquet',NULL,NULL,NULL,NULL,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/ingestion/yellow','yellow_tripdata_2020-12.parquet',NULL,NULL,\nNULL,1,NULL,NULL\n)\n------------------------------------------END - Yellow CAB\n\n----------------------------------------------Stage Tables\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n49,'NYC Ride Analysis','ADL2 to Synapse (Stage)','NYCCabTrip_Yellow',200,\n'Data Lake',NULL,'transportationdedicated','stage','External_NYCCabTrip_Yellow',NULL,NULL,NULL,\n'Synapse',NULL,'transportationdedicated','stage','NYCCabTrip_Yellow',NULL,NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n50,'NYC Ride Analysis','ADL2 to Synapse (Stage)','NYCCabTrip_Green',201,\n'Data Lake',NULL,'transportationdedicated','stage','External_NYCCabTrip_Green',NULL,NULL,NULL,\n'Synapse',NULL,'transportationdedicated','stage','NYCCabTrip_Green',NULL,NULL,NULL,\nNULL,1,NULL,NULL\n)\n----------------------------------------END - Stage Tables\n\n-------------------------------------------------DW Tables\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n51,'NYC Ride Analysis','Load Dimensions','DimLocation',300,\n'Data Lake',NULL,'externalstgaccmigration','migrationcontainer','migration-test/nyccab/curated/taxi_zone_lookup','*.parquet',NULL,NULL,\n'Synapse',NULL,'transportationdedicated','dw','DimLocation',NULL,NULL,NULL,\nNULL,1,NULL,NULL\n)\n\nINSERT INTO [operation].[MetadataTableControl] VALUES (\n52,'NYC Ride Analysis','Load Facts','FactCabTrip',301,\n'Synapse',NULL,'transportationdedicated','stage','NYCCabTrip_Green,NYCCabTrip_Yellow',NULL,NULL,NULL,\n'Synapse',NULL,'transportationdedicated','dw','FactCabTrip',NULL,NULL,NULL,\nNULL,1,NULL,NULL\n)\n\n-- Stamp load time on every control row\nUPDATE operation.MetadataTableControl SET DataInserted = GETDATE() WHERE DataInserted IS NULL;\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/dim_tables')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "-- dw.DimVendor\nTRUNCATE TABLE dw.DimVendor;\nINSERT INTO dw.DimVendor VALUES (1,1,'Creative Mobile Technologies, LLC');\nINSERT INTO dw.DimVendor VALUES (2,2,'VeriFone Inc.');\n\n-- dw.DimVendor\nTRUNCATE TABLE dw.DimRate;\nINSERT INTO dw.DimRate VALUES (1,1,'Standard rate');\nINSERT INTO dw.DimRate VALUES (2,2,'JFK');\nINSERT INTO dw.DimRate VALUES (3,3,'Newark');\nINSERT INTO dw.DimRate VALUES (4,4,'Nassau or Westchester');\nINSERT INTO dw.DimRate VALUES (5,5,'Negotiated fare');\nINSERT INTO dw.DimRate VALUES (6,6,'Group ride');\n\n-- dw.DimPaymentType\nTRUNCATE TABLE dw.DimPaymentType;\nINSERT INTO dw.DimPaymentType VALUES (1,1,'Credit card');\nINSERT INTO dw.DimPaymentType VALUES (2,2,'Cash');\nINSERT INTO dw.DimPaymentType VALUES (3,3,'No charge');\nINSERT INTO dw.DimPaymentType VALUES (4,4,'Dispute');\nINSERT INTO dw.DimPaymentType VALUES (5,5,'Unknown');\nINSERT INTO dw.DimPaymentType VALUES (6,6,'Voided trip');\n\n-- dw.DimPaymentType\nTRUNCATE TABLE dw.DimTripType;\nINSERT INTO dw.DimTripType VALUES (1,1,'Street-hail');\nINSERT INTO dw.DimTripType VALUES (2,2,'Dispatch');\nINSERT INTO dw.DimTripType VALUES (0,0,'Not applicable (yellow cab)');\n\n-- dw.DimTripType\nTRUNCATE TABLE dw.DimCabType;\nINSERT INTO dw.DimCabType VALUES (1,1,'Yellow');\nINSERT INTO dw.DimCabType VALUES (2,2,'Green');",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/external_tables')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##')\n    CREATE MASTER KEY;\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'SynapseManagedIdentity')\n    CREATE DATABASE SCOPED CREDENTIAL [SynapseManagedIdentity] WITH IDENTITY = 'Managed Service Identity';\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.external_file_formats WHERE name = 'SynapseParquetFormat')\n    CREATE EXTERNAL FILE FORMAT [SynapseParquetFormat] WITH (FORMAT_TYPE = PARQUET);\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'transportdw_externalstgaccmigration_dfs_core_windows')\n    CREATE EXTERNAL DATA SOURCE [transportdw_externalstgaccmigration_dfs_core_windows]\n    WITH (\n        LOCATION = 'abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net',\n        TYPE = HADOOP,\n        CREDENTIAL = [SynapseManagedIdentity]\n    );\nGO\n\nIF OBJECT_ID('stage.External_NYCCabTrip_Green') IS NULL\nCREATE EXTERNAL TABLE stage.External_NYCCabTrip_Green (\n\t[VendorID] varchar(8000), [lpep_pickup_datetime] varchar(8000), [lpep_dropoff_datetime] varchar(8000),\n\t[store_and_fwd_flag] varchar(8000), [RatecodeID] varchar(8000), [PULocationID] varchar(8000),\n\t[DOLocationID] varchar(8000), [passenger_count] varchar(8000), [trip_distance] varchar(8000),\n\t[fare_amount] varchar(8000), [extra] varchar(8000), [mta_tax] varchar(8000), [tip_amount] varchar(8000),\n\t[tolls_amount] varchar(8000), [ehail_fee] varchar(8000), [improvement_surcharge] varchar(8000),\n\t[total_amount] varchar(8000), [payment_type] varchar(8000), [trip_type] varchar(8000),\n\t[congestion_surcharge] varchar(8000)\n)\nWITH (\n\tLOCATION = 'migration-test/nyccab/curated/green',\n\tDATA_SOURCE = [transportdw_externalstgaccmigration_dfs_core_windows],\n\tFILE_FORMAT = [SynapseParquetFormat],\n\tREJECT_TYPE = VALUE,\n\tREJECT_VALUE = 0\n);\nGO\n\nIF OBJECT_ID('stage.External_NYCCabTrip_Yellow') IS NULL\nCREATE EXTERNAL TABLE stage.External_NYCCabTrip_Yellow (\n    VendorID varchar(8000), lpep_pickup_datetime varchar(8000), lpep_dropoff_datetime varchar(8000),\n    passenger_count varchar(8000), trip_distance varchar(8000), RatecodeID varchar(8000),\n    store_and_fwd_flag varchar(8000), PULocationID varchar(8000), DOLocationID varchar(8000),\n    payment_type varchar(8000), fare_amount varchar(8000), extra varchar(8000), mta_tax varchar(8000),\n    tip_amount varchar(8000), tolls_amount varchar(8000), improvement_surcharge varchar(8000),\n    total_amount varchar(8000), congestion_surcharge varchar(8000)\n)\nWITH (\n\tLOCATION = 'migration-test/nyccab/curated/yellow',\n\tDATA_SOURCE = [transportdw_externalstgaccmigration_dfs_core_windows],\n\tFILE_FORMAT = [SynapseParquetFormat],\n\tREJECT_TYPE = VALUE,\n\tREJECT_VALUE = 0\n);\nGO\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/indexes')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "CREATE INDEX IDX_PuLocationKey ON [dw].[FactCabTrip] (PULocationKey);\nGO\n\nCREATE INDEX IDX_DOLocationKey ON [dw].[FactCabTrip] (DOLocationKey);\nGO",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/procedures_assessment')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "CREATE PROCEDURE operation.usp_CabDataAssessment\nAS\nBEGIN\n\n    SELECT\n        ObjectName,\n        ObjectType,\n        Row_Count\n    FROM operation.vw_MigrationObjectCounts\n    ORDER BY ObjectType, ObjectName;\n\n    SELECT\n        SourceTable,\n        Row_Count\n    FROM operation.vw_CabSourceSummary\n    ORDER BY SourceTable;\n\nEND;\nGO\nCREATE PROCEDURE operation.usp_CabDataValidation\nAS\nBEGIN\n\n    SELECT\n        'FactCabTrip' AS ValidationObject,\n        COUNT_BIG(*) AS Row_Count\n    FROM dw.FactCabTrip\n\n    UNION ALL\n\n    SELECT\n        'NYCCabTrip_Green',\n        COUNT_BIG(*)\n    FROM stage.NYCCabTrip_Green\n\n    UNION ALL\n\n    SELECT\n        'NYCCabTrip_Yellow',\n        COUNT_BIG(*)\n    FROM stage.NYCCabTrip_Yellow;\n\nEND;\nGO\n\nSELECT\n    s.name AS SchemaName,\n    o.name AS ObjectName,\n    o.type_desc AS ObjectType\nFROM sys.objects o\nJOIN sys.schemas s\n    ON o.schema_id = s.schema_id\nWHERE s.name = 'operation'\nORDER BY o.type_desc, o.name;",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/schema')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "CREATE SCHEMA operation;\nGO\n\nCREATE SCHEMA stage;\nGO\n\nCREATE SCHEMA dw;\nGO\n\nCREATE TABLE [operation].[MetadataTableControl](\n\t[DataSetSourceDestinationID] [smallint] NOT NULL,\n\t[GroupName] [varchar](50) NULL,\n\t[GroupLoad] [varchar](50) NULL,\n\t[FinalTableName] [varchar](50) NULL,\n\t[TableGroupNumber] [smallint] NULL,\n\t[SourceTypeofObject] [varchar](50) NULL,\n\t[SourceKeyVaultSecretName] [varchar](100) NULL,\n\t[SourceControl1] [varchar](1000) NULL,\n\t[SourceControl2] [varchar](1000) NULL,\n\t[SourceControl3] [varchar](1000) NULL,\n\t[SourceControl4] [varchar](1000) NULL,\n\t[SourceControl5] [varchar](1000) NULL,\n\t[SourceControl6] [varchar](1000) NULL,\n\t[DestinationTypeofObject] [varchar](50) NULL,\n\t[DestinationKeyVaultSecretName] [varchar](100) NULL,\n\t[DestinationControl1] [varchar](1000) NULL,\n\t[DestinationControl2] [varchar](1000) NULL,\n\t[DestinationControl3] [varchar](1000) NULL,\n\t[DestinationControl4] [varchar](1000) NULL,\n\t[DestinationControl5] [varchar](1000) NULL,\n\t[DestinationControl6] [varchar](1000) NULL,\n\t[ColumnPartitionBy] [varchar](50) NULL,\n\t[Active] [bit] NULL,\n\t[DataInserted] [datetime] NULL,\n\t[DataUpdated] [datetime] NULL\n)\nGO\n\n\nCREATE TABLE dw.DimCabType\n    (  \n    CabTypeKey               int NOT NULL,\n    CabTypeID                smallint        NULL,\n    CabTypeDescription       varchar(100)    NULL\n    )\nWITH\n  (\n    CLUSTERED COLUMNSTORE INDEX,  \n    DISTRIBUTION = REPLICATE  \n  )\nGO\n\nCREATE TABLE dw.DimLocation\n    (  \n    LocationKey               int identity(1,1) NOT NULL,\n    LocationID                smallint        NULL,\n    Borough                   varchar(50)     NULL,\n    Zone                      varchar(50)     NULL,\n    service_zone              varchar(50)     NULL\n    )\nWITH\n  (\n    CLUSTERED COLUMNSTORE INDEX,  \n    DISTRIBUTION = REPLICATE  \n  )\n  GO\n\nCREATE TABLE dw.DimPaymentType\n    (  \n    PaymentTypeKey                int NOT NULL,\n    PaymentTypeID                 smallint          NULL,\n    PaymentTypeDescription        varchar(50)       NULL\n    )\nWITH\n  (\n    CLUSTERED COLUMNSTORE INDEX,  \n    DISTRIBUTION = REPLICATE  \n  );\nGO\n\nCREATE TABLE dw.DimRate\n    (  \n    RateKey                   int NOT NULL,\n    RateID                    smallint            NULL,\n    RateDescription           varchar(50)         NULL\n    )\nWITH\n  (\n    CLUSTERED COLUMNSTORE INDEX,  \n    DISTRIBUTION = REPLICATE  \n  );\nGO\n\nCREATE TABLE dw.DimTripType\n    (  \n    TripTypeKey                int NOT NULL,\n    TripTypeID                 smallint        NULL,\n    TripTypeDescription        varchar(50)     NULL\n    )\nWITH\n  (\n    CLUSTERED COLUMNSTORE INDEX,  \n    DISTRIBUTION = REPLICATE  \n  );\nGO\n\nCREATE TABLE dw.DimVendor\n    (  \n    VendorKey               int NOT NULL,\n    VendorID                smallint        NULL,\n    VendorDescription       varchar(100)    NULL\n    )\nWITH\n  (\n    DISTRIBUTION = REPLICATE,\n    CLUSTERED INDEX (VendorKey)  \n  );\nGO\n\nCREATE TABLE dw.FactCabTrip\n    (\n    CabTripKey                int NOT NULL,\n    VendorKey                 int,\n    CabTypeKey                int,\n    LpepPickupDatetime        datetime,\n    LpepDropoffDatetime       datetime,\n    StoreAndFwdFlag           varchar(1),\n    RateKey                   int,\n    PULocationKey             int,\n    DOLocationKey             int,\n    TripTypeKey               int,\n    PaymentTypeKey            int,\n    PassengerCount            tinyint,\n    TripDistance              decimal(10,2),\n    FareAmount                decimal(10,2),\n    Extra                     decimal(10,2),\n    MtaTax                    decimal(10,2),\n    TipAmount                 decimal(10,2),\n    TollsAmount               decimal(10,2),\n    EhailFee                  decimal(10,2),\n    ImprovementSurcharge      decimal(10,2),\n    TotalAmount               decimal(10,2)\n    )\nWITH\n  (\n    DISTRIBUTION = HASH (PULocationKey),\n    CLUSTERED COLUMNSTORE INDEX\n  );\nGO\n\n\nCREATE TABLE stage.NYCCabTrip_Green\n    (  \n\t[VendorID] varchar(8000),\n\t[lpep_pickup_datetime] varchar(8000),\n\t[lpep_dropoff_datetime] varchar(8000),\n\t[store_and_fwd_flag] varchar(8000),\n\t[RatecodeID] varchar(8000),\n\t[PULocationID] varchar(8000),\n\t[DOLocationID] varchar(8000),\n\t[passenger_count] varchar(8000),\n\t[trip_distance] varchar(8000),\n\t[fare_amount] varchar(8000),\n\t[extra] varchar(8000),\n\t[mta_tax] varchar(8000),\n\t[tip_amount] varchar(8000),\n\t[tolls_amount] varchar(8000),\n\t[ehail_fee] varchar(8000),\n\t[improvement_surcharge] varchar(8000),\n\t[total_amount] varchar(8000),\n\t[payment_type] varchar(8000),\n\t[trip_type] varchar(8000),\n\t[congestion_surcharge] varchar(8000)\n    )\nWITH\n    (\n    DISTRIBUTION = ROUND_ROBIN,\n    CLUSTERED COLUMNSTORE INDEX\n    );\nGO\n\nCREATE TABLE stage.NYCCabTrip_Yellow (\n    VendorID                varchar(8000),\n    lpep_pickup_datetime    varchar(8000),\n    lpep_dropoff_datetime   varchar(8000),\n    passenger_count         varchar(8000),\n    trip_distance           varchar(8000),\n    RatecodeID              varchar(8000),\n    store_and_fwd_flag      varchar(8000),\n    PULocationID            varchar(8000),\n    DOLocationID            varchar(8000),\n    payment_type            varchar(8000),\n    fare_amount             varchar(8000),\n    extra                   varchar(8000),\n    mta_tax                 varchar(8000),\n    tip_amount              varchar(8000),\n    tolls_amount            varchar(8000),\n    improvement_surcharge   varchar(8000),\n    total_amount            varchar(8000),\n    congestion_surcharge    varchar(8000)\n    )\nWITH\n    (\n    DISTRIBUTION = ROUND_ROBIN,\n    CLUSTERED COLUMNSTORE INDEX\n    );\nGO\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/schema_extensions')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "-- Tables added for PL_Cab_Data_Ingestion (run log + taxi zone staging).\nIF OBJECT_ID('operation.PipelineRunLog') IS NULL\nCREATE TABLE operation.PipelineRunLog\n(\n    PipelineName   varchar(200)  NOT NULL,\n    PipelineRunId  varchar(100)  NOT NULL,\n    ActivityName   varchar(200)  NULL,\n    RunStatus      varchar(20)   NOT NULL,\n    RunMessage     varchar(4000) NULL,\n    LoggedAtUtc    datetime2     NOT NULL\n)\nWITH (DISTRIBUTION = ROUND_ROBIN, HEAP);\nGO\n\n-- Target of PL_Spark_Test Copy activity (DS_Processed_Sales_By_City_Product -> DS_SQL_DynamicTable).\nIF OBJECT_ID('dw.SalesByCityProduct') IS NULL\nCREATE TABLE dw.SalesByCityProduct\n(\n    City         varchar(100) NULL,\n    Product      varchar(100) NULL,\n    TotalAmount  bigint       NULL\n)\nWITH (DISTRIBUTION = REPLICATE, CLUSTERED INDEX (City, Product));\nGO\n\nIF OBJECT_ID('stage.TaxiZoneLookup') IS NULL\nCREATE TABLE stage.TaxiZoneLookup\n(\n    LocationID    varchar(8000),\n    Borough       varchar(8000),\n    Zone          varchar(8000),\n    service_zone  varchar(8000)\n)\nWITH (DISTRIBUTION = ROUND_ROBIN, HEAP);\nGO\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/stored_procedures')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "-- Note: dedicated SQL pools do not support default parameter values; callers pass every parameter.\n-- Stored procedures called by PL_Cab_Data_Ingestion / PL_SQL_Object_Test / PL_Validation.\nIF OBJECT_ID('operation.usp_LogPipelineRun') IS NOT NULL DROP PROCEDURE operation.usp_LogPipelineRun;\nGO\nCREATE PROCEDURE operation.usp_LogPipelineRun\n    @PipelineName  varchar(200),\n    @PipelineRunId varchar(100),\n    @ActivityName  varchar(200),\n    @RunStatus     varchar(20),\n    @RunMessage    varchar(4000)\nAS\nBEGIN\n    INSERT INTO operation.PipelineRunLog (PipelineName, PipelineRunId, ActivityName, RunStatus, RunMessage, LoggedAtUtc)\n    SELECT @PipelineName, @PipelineRunId, @ActivityName, @RunStatus, @RunMessage, GETUTCDATE();\nEND;\nGO\n\nIF OBJECT_ID('operation.usp_LoadStageCabTrips') IS NOT NULL DROP PROCEDURE operation.usp_LoadStageCabTrips;\nGO\nCREATE PROCEDURE operation.usp_LoadStageCabTrips\n    @StorageAccount varchar(100),\n    @Container      varchar(100)\nAS\nBEGIN\n    -- Loads curated Parquet (written by JBD_Process_Cab_Data) into the stage tables using the workspace managed identity.\n    -- COPY with IDENTITY = 'Managed Identity' needs the ADLS Gen2 (.dfs) endpoint; the .blob endpoint is rejected.\n    DECLARE @root varchar(500) = 'https://' + @StorageAccount + '.dfs.core.windows.net/' + @Container + '/migration-test/nyccab/curated/';\n    DECLARE @sql varchar(4000);\n\n    TRUNCATE TABLE stage.NYCCabTrip_Green;\n    TRUNCATE TABLE stage.NYCCabTrip_Yellow;\n    TRUNCATE TABLE stage.TaxiZoneLookup;\n\n    SET @sql = 'COPY INTO stage.NYCCabTrip_Green FROM ''' + @root + 'green/*.parquet'' WITH (FILE_TYPE = ''PARQUET'', CREDENTIAL = (IDENTITY = ''Managed Identity''))';\n    EXEC (@sql);\n\n    SET @sql = 'COPY INTO stage.NYCCabTrip_Yellow FROM ''' + @root + 'yellow/*.parquet'' WITH (FILE_TYPE = ''PARQUET'', CREDENTIAL = (IDENTITY = ''Managed Identity''))';\n    EXEC (@sql);\n\n    SET @sql = 'COPY INTO stage.TaxiZoneLookup FROM ''' + @root + 'taxi_zone_lookup/*.parquet'' WITH (FILE_TYPE = ''PARQUET'', CREDENTIAL = (IDENTITY = ''Managed Identity''))';\n    EXEC (@sql);\nEND;\nGO\n\nIF OBJECT_ID('operation.usp_LoadDimLocation') IS NOT NULL DROP PROCEDURE operation.usp_LoadDimLocation;\nGO\nCREATE PROCEDURE operation.usp_LoadDimLocation\nAS\nBEGIN\n    -- Full reload from the zone snapshot. LocationKey is set to the TLC LocationID (IDENTITY_INSERT) because\n    -- dedicated-pool IDENTITY values are not sequential/deterministic, which would break row-level\n    -- Synapse vs Fabric comparisons after migration.\n    TRUNCATE TABLE dw.DimLocation;\n\n    SET IDENTITY_INSERT dw.DimLocation ON;\n\n    INSERT INTO dw.DimLocation (LocationKey, LocationID, Borough, Zone, service_zone)\n    SELECT DISTINCT TRY_CAST(z.LocationID AS int), TRY_CAST(z.LocationID AS smallint),\n           LEFT(z.Borough, 50), LEFT(z.Zone, 50), LEFT(z.service_zone, 50)\n    FROM stage.TaxiZoneLookup z\n    WHERE TRY_CAST(z.LocationID AS smallint) IS NOT NULL;\n\n    SET IDENTITY_INSERT dw.DimLocation OFF;\nEND;\nGO\n\nIF OBJECT_ID('operation.usp_LoadFactCabTrip') IS NOT NULL DROP PROCEDURE operation.usp_LoadFactCabTrip;\nGO\nCREATE PROCEDURE operation.usp_LoadFactCabTrip\nAS\nBEGIN\n    TRUNCATE TABLE dw.FactCabTrip;\n\n    INSERT INTO dw.FactCabTrip\n    (\n        CabTripKey, VendorKey, CabTypeKey, LpepPickupDatetime, LpepDropoffDatetime, StoreAndFwdFlag,\n        RateKey, PULocationKey, DOLocationKey, TripTypeKey, PaymentTypeKey, PassengerCount, TripDistance,\n        FareAmount, Extra, MtaTax, TipAmount, TollsAmount, EhailFee, ImprovementSurcharge, TotalAmount\n    )\n    SELECT\n        -- Deterministic surrogate key: stage rows are de-duplicated, so ordering by every column gives the\n        -- same CabTripKey on every run and on every platform (needed for row-level migration comparison).\n        ROW_NUMBER() OVER (ORDER BY t.CabType, t.Pickup, t.Dropoff, TRY_CAST(t.PULocationID AS int),\n                                    TRY_CAST(t.DOLocationID AS int), t.VendorID, t.RatecodeID, t.payment_type,\n                                    t.trip_type, t.passenger_count, t.store_and_fwd_flag,\n                                    TRY_CAST(t.trip_distance AS decimal(10,2)), TRY_CAST(t.fare_amount AS decimal(10,2)),\n                                    TRY_CAST(t.extra AS decimal(10,2)), TRY_CAST(t.tip_amount AS decimal(10,2)),\n                                    TRY_CAST(t.tolls_amount AS decimal(10,2)), TRY_CAST(t.total_amount AS decimal(10,2))),\n        v.VendorKey, c.CabTypeKey, t.Pickup, t.Dropoff, LEFT(t.store_and_fwd_flag, 1),\n        r.RateKey, pu.LocationKey, dl.LocationKey,\n        -- Yellow cabs have no trip type: use the 'Not applicable' member (key 0) instead of NULL so INNER JOINs keep them.\n        CASE WHEN t.CabType = 'Yellow' THEN 0 ELSE tt.TripTypeKey END, p.PaymentTypeKey,\n        TRY_CAST(t.passenger_count AS tinyint), TRY_CAST(t.trip_distance AS decimal(10,2)),\n        TRY_CAST(t.fare_amount AS decimal(10,2)), TRY_CAST(t.extra AS decimal(10,2)),\n        TRY_CAST(t.mta_tax AS decimal(10,2)), TRY_CAST(t.tip_amount AS decimal(10,2)),\n        TRY_CAST(t.tolls_amount AS decimal(10,2)), TRY_CAST(t.ehail_fee AS decimal(10,2)),\n        TRY_CAST(t.improvement_surcharge AS decimal(10,2)), TRY_CAST(t.total_amount AS decimal(10,2))\n    FROM\n    (\n        SELECT 'Green' AS CabType, TRY_CAST(lpep_pickup_datetime AS datetime) AS Pickup,\n               TRY_CAST(lpep_dropoff_datetime AS datetime) AS Dropoff, VendorID, store_and_fwd_flag, RatecodeID,\n               PULocationID, DOLocationID, passenger_count, trip_distance, fare_amount, extra, mta_tax, tip_amount,\n               tolls_amount, ehail_fee, improvement_surcharge, total_amount, payment_type, trip_type\n        FROM stage.NYCCabTrip_Green\n        UNION ALL\n        SELECT 'Yellow', TRY_CAST(lpep_pickup_datetime AS datetime), TRY_CAST(lpep_dropoff_datetime AS datetime),\n               VendorID, store_and_fwd_flag, RatecodeID, PULocationID, DOLocationID, passenger_count, trip_distance,\n               fare_amount, extra, mta_tax, tip_amount, tolls_amount, NULL, improvement_surcharge, total_amount,\n               payment_type, NULL\n        FROM stage.NYCCabTrip_Yellow\n    ) t\n    LEFT JOIN dw.DimCabType     c  ON c.CabTypeDescription = t.CabType\n    LEFT JOIN dw.DimVendor      v  ON v.VendorID       = TRY_CAST(t.VendorID AS smallint)\n    LEFT JOIN dw.DimRate        r  ON r.RateID         = TRY_CAST(t.RatecodeID AS smallint)\n    LEFT JOIN dw.DimLocation    pu ON pu.LocationID    = TRY_CAST(t.PULocationID AS smallint)\n    LEFT JOIN dw.DimLocation    dl ON dl.LocationID    = TRY_CAST(t.DOLocationID AS smallint)\n    LEFT JOIN dw.DimTripType    tt ON tt.TripTypeID    = TRY_CAST(t.trip_type AS smallint)\n    LEFT JOIN dw.DimPaymentType p  ON p.PaymentTypeID  = TRY_CAST(t.payment_type AS smallint);\nEND;\nGO\n\nIF OBJECT_ID('operation.usp_ValidateFactLoad') IS NOT NULL DROP PROCEDURE operation.usp_ValidateFactLoad;\nGO\nCREATE PROCEDURE operation.usp_ValidateFactLoad\n    @PipelineName  varchar(200),\n    @PipelineRunId varchar(100)\nAS\nBEGIN\n    -- Fails (THROW) when the fact table does not reconcile with stage, so the pipeline activity fails.\n    DECLARE @green bigint, @yellow bigint, @fact bigint, @orphans bigint, @dq bigint, @dupkeys bigint, @msg varchar(4000);\n\n    SELECT @green  = COUNT_BIG(*) FROM stage.NYCCabTrip_Green;\n    SELECT @yellow = COUNT_BIG(*) FROM stage.NYCCabTrip_Yellow;\n    SELECT @fact   = COUNT_BIG(*) FROM dw.FactCabTrip;\n    SELECT @orphans = COUNT_BIG(*) FROM dw.FactCabTrip\n    WHERE VendorKey IS NULL OR CabTypeKey IS NULL OR RateKey IS NULL OR PaymentTypeKey IS NULL OR TripTypeKey IS NULL\n       OR PULocationKey IS NULL OR DOLocationKey IS NULL;\n    -- Business-rule violations the cleaning step must have removed / the generator must never produce.\n    SELECT @dq = COUNT_BIG(*) FROM dw.FactCabTrip\n    WHERE LpepPickupDatetime IS NULL OR LpepDropoffDatetime < LpepPickupDatetime OR FareAmount < 0\n       OR TotalAmount < FareAmount OR (PaymentTypeKey <> 1 AND TipAmount <> 0);\n    SELECT @dupkeys = COUNT_BIG(*) - COUNT_BIG(DISTINCT CabTripKey) FROM dw.FactCabTrip;\n\n    SET @msg = 'stage=' + CAST(@green + @yellow AS varchar(20)) + ' fact=' + CAST(@fact AS varchar(20))\n             + ' unmatched_dim_keys=' + CAST(@orphans AS varchar(20)) + ' dq_violations=' + CAST(@dq AS varchar(20))\n             + ' duplicate_keys=' + CAST(@dupkeys AS varchar(20));\n\n    IF @fact = 0 OR @fact <> @green + @yellow OR @orphans > 0 OR @dq > 0 OR @dupkeys > 0\n    BEGIN\n        EXEC operation.usp_LogPipelineRun @PipelineName, @PipelineRunId, 'usp_ValidateFactLoad', 'Failed', @msg;\n        SET @msg = 'Fact load validation failed: ' + @msg;\n        THROW 50001, @msg, 1;\n    END;\n\n    EXEC operation.usp_LogPipelineRun @PipelineName, @PipelineRunId, 'usp_ValidateFactLoad', 'Succeeded', @msg;\nEND;\nGO\n",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/views')]",
+			"type": "Microsoft.Synapse/workspaces/sqlscripts",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "DedicatedSQL"
+				},
+				"content": {
+					"query": "CREATE VIEW operation.vw_CabSourceSummary\nAS\n\nSELECT\n    'stage.NYCCabTrip_Green' AS SourceTable,\n    COUNT_BIG(*) AS Row_Count\nFROM stage.NYCCabTrip_Green\n\nUNION ALL\n\nSELECT\n    'stage.NYCCabTrip_Yellow' AS SourceTable,\n    COUNT_BIG(*) AS Row_Count\nFROM stage.NYCCabTrip_Yellow;\nGO\nCREATE VIEW operation.vw_MigrationObjectCounts\nAS\n\nSELECT\n    'dw.DimCabType' AS ObjectName,\n    'Dimension Table' AS ObjectType,\n    COUNT_BIG(*) AS Row_Count\nFROM dw.DimCabType\n\nUNION ALL\n\nSELECT\n    'dw.DimLocation',\n    'Dimension Table',\n    COUNT_BIG(*)\nFROM dw.DimLocation\n\nUNION ALL\n\nSELECT\n    'dw.DimPaymentType',\n    'Dimension Table',\n    COUNT_BIG(*)\nFROM dw.DimPaymentType\n\nUNION ALL\n\nSELECT\n    'dw.DimRate',\n    'Dimension Table',\n    COUNT_BIG(*)\nFROM dw.DimRate\n\nUNION ALL\n\nSELECT\n    'dw.DimTripType',\n    'Dimension Table',\n    COUNT_BIG(*)\nFROM dw.DimTripType\n\nUNION ALL\n\nSELECT\n    'dw.DimVendor',\n    'Dimension Table',\n    COUNT_BIG(*)\nFROM dw.DimVendor\n\nUNION ALL\n\nSELECT\n    'dw.FactCabTrip',\n    'Fact Table',\n    COUNT_BIG(*)\nFROM dw.FactCabTrip\n\nUNION ALL\n\nSELECT\n    'stage.NYCCabTrip_Green',\n    'Stage Table',\n    COUNT_BIG(*)\nFROM stage.NYCCabTrip_Green\n\nUNION ALL\n\nSELECT\n    'stage.NYCCabTrip_Yellow',\n    'Stage Table',\n    COUNT_BIG(*)\nFROM stage.NYCCabTrip_Yellow;",
+					"metadata": {
+						"language": "sql"
+					},
+					"currentConnection": {
+						"databaseName": "transportationdedicated",
+						"poolName": "transportationdedicated"
+					},
+					"resultLimit": 5000
+				},
+				"type": "SqlQuery"
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/JBD_Process_Cab_Data')]",
+			"type": "Microsoft.Synapse/workspaces/sparkJobDefinitions",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Cleans raw green/yellow cab trip CSVs into curated Parquet (stage-table column order) plus the taxi zone lookup.",
+				"folder": {
+					"name": "Ingestion"
+				},
+				"targetBigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"requiredSparkVersion": "3.5",
+				"language": "python",
+				"scanFolder": false,
+				"jobProperties": {
+					"name": "JBD_Process_Cab_Data",
+					"file": "abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net/jobs/process_cab_data.py",
+					"conf": {
+						"spark.dynamicAllocation.enabled": "false",
+						"spark.dynamicAllocation.minExecutors": "2",
+						"spark.dynamicAllocation.maxExecutors": "2"
+					},
+					"args": [
+						"--storage-account",
+						"externalstgaccmigration",
+						"--container",
+						"migrationcontainer"
+					],
+					"jars": [],
+					"pyFiles": [],
+					"files": [],
+					"archives": [],
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/SJD_Build_Trip_Summary')]",
+			"type": "Microsoft.Synapse/workspaces/sparkJobDefinitions",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"description": "Builds a daily trip summary (cab type x pickup borough) from curated cab trip Parquet.",
+				"folder": {
+					"name": "Ingestion"
+				},
+				"targetBigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"requiredSparkVersion": "3.5",
+				"language": "python",
+				"scanFolder": false,
+				"jobProperties": {
+					"name": "SJD_Build_Trip_Summary",
+					"file": "abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net/jobs/build_trip_summary.py",
+					"conf": {
+						"spark.dynamicAllocation.enabled": "false",
+						"spark.dynamicAllocation.minExecutors": "2",
+						"spark.dynamicAllocation.maxExecutors": "2"
+					},
+					"args": [
+						"--storage-account",
+						"externalstgaccmigration",
+						"--container",
+						"migrationcontainer"
+					],
+					"jars": [],
+					"pyFiles": [],
+					"files": [],
+					"archives": [],
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2
+				}
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/NB_Generate_Cab_Trips')]",
+			"type": "Microsoft.Synapse/workspaces/notebooks",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "Ingestion"
+				},
+				"nbformat": 4,
+				"nbformat_minor": 2,
+				"bigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"sessionProperties": {
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2,
+					"runAsWorkspaceSystemIdentity": false,
+					"conf": {}
+				},
+				"metadata": {
+					"language_info": {
+						"name": "python"
+					}
+				},
+				"cells": [
+					{
+						"cell_type": "code",
+						"metadata": {
+							"tags": [
+								"parameters"
+							]
+						},
+						"source": [
+							"storage_account = \"externalstgaccmigration\"\n",
+							"container = \"migrationcontainer\"\n",
+							"num_trips = 5000\n",
+							"seed = 42"
+						],
+						"outputs": []
+					},
+					{
+						"cell_type": "code",
+						"source": [
+							"# Generate deterministic, internally consistent NYC green/yellow cab trips (Jan-Mar 2019) as raw CSV,\n",
+							"# plus a taxi zone lookup based on real NYC TLC zone IDs.\n",
+							"#\n",
+							"# Business rules (2019 TLC tariff, simplified):\n",
+							"#   * standard meter: $2.50 + $2.50/mile + $0.35/minute, rounded to $0.50; JFK<->Manhattan flat $52;\n",
+							"#     Newark = meter + $17.50; negotiated fares are rare\n",
+							"#   * extra $0.50 overnight (20:00-06:00), $1.00 weekday peak (16:00-20:00); MTA tax $0.50; improvement $0.30\n",
+							"#   * congestion surcharge $2.75 only from 2019-02-01 and only for trips touching Manhattan's Yellow Zone\n",
+							"#   * tips only on credit card payments (payment_type 1)\n",
+							"#   * green cabs pick up outside Manhattan's Yellow Zone\n",
+							"#   * total_amount = fare + extra + mta_tax + tip + tolls + improvement + congestion\n",
+							"# Deliberate dirty data for JBD_Process_Cab_Data to clean: ~1% missing pickup time, ~1% negative fare,\n",
+							"# ~1% exact duplicate rows. Same seed => same rows every run, so Synapse vs Fabric results can be compared.\n",
+							"import random\n",
+							"from datetime import datetime, timedelta\n",
+							"\n",
+							"base = f\"abfss://{container}@{storage_account}.dfs.core.windows.net/migration-test/nyccab\"\n",
+							"rnd = random.Random(seed)\n",
+							"\n",
+							"zones = [\n",
+							"    (1, \"EWR\", \"Newark Airport\", \"EWR\"),\n",
+							"    (4, \"Manhattan\", \"Alphabet City\", \"Yellow Zone\"),\n",
+							"    (5, \"Staten Island\", \"Arden Heights\", \"Boro Zone\"),\n",
+							"    (7, \"Queens\", \"Astoria\", \"Boro Zone\"),\n",
+							"    (13, \"Manhattan\", \"Battery Park City\", \"Yellow Zone\"),\n",
+							"    (24, \"Manhattan\", \"Bloomingdale\", \"Yellow Zone\"),\n",
+							"    (33, \"Brooklyn\", \"Brooklyn Heights\", \"Boro Zone\"),\n",
+							"    (41, \"Manhattan\", \"Central Harlem\", \"Boro Zone\"),\n",
+							"    (42, \"Manhattan\", \"Central Harlem North\", \"Boro Zone\"),\n",
+							"    (43, \"Manhattan\", \"Central Park\", \"Yellow Zone\"),\n",
+							"    (48, \"Manhattan\", \"Clinton East\", \"Yellow Zone\"),\n",
+							"    (65, \"Brooklyn\", \"Downtown Brooklyn/MetroTech\", \"Boro Zone\"),\n",
+							"    (66, \"Brooklyn\", \"DUMBO/Vinegar Hill\", \"Boro Zone\"),\n",
+							"    (68, \"Manhattan\", \"East Chelsea\", \"Yellow Zone\"),\n",
+							"    (74, \"Manhattan\", \"East Harlem North\", \"Boro Zone\"),\n",
+							"    (75, \"Manhattan\", \"East Harlem South\", \"Boro Zone\"),\n",
+							"    (79, \"Manhattan\", \"East Village\", \"Yellow Zone\"),\n",
+							"    (82, \"Queens\", \"Elmhurst\", \"Boro Zone\"),\n",
+							"    (87, \"Manhattan\", \"Financial District North\", \"Yellow Zone\"),\n",
+							"    (88, \"Manhattan\", \"Financial District South\", \"Yellow Zone\"),\n",
+							"    (97, \"Brooklyn\", \"Fort Greene\", \"Boro Zone\"),\n",
+							"    (112, \"Brooklyn\", \"Greenpoint\", \"Boro Zone\"),\n",
+							"    (113, \"Manhattan\", \"Greenwich Village North\", \"Yellow Zone\"),\n",
+							"    (114, \"Manhattan\", \"Greenwich Village South\", \"Yellow Zone\"),\n",
+							"    (129, \"Queens\", \"Jackson Heights\", \"Boro Zone\"),\n",
+							"    (132, \"Queens\", \"JFK Airport\", \"Airports\"),\n",
+							"    (138, \"Queens\", \"LaGuardia Airport\", \"Airports\"),\n",
+							"    (140, \"Manhattan\", \"Lenox Hill East\", \"Yellow Zone\"),\n",
+							"    (141, \"Manhattan\", \"Lenox Hill West\", \"Yellow Zone\"),\n",
+							"    (142, \"Manhattan\", \"Lincoln Square East\", \"Yellow Zone\"),\n",
+							"    (161, \"Manhattan\", \"Midtown Center\", \"Yellow Zone\"),\n",
+							"    (162, \"Manhattan\", \"Midtown East\", \"Yellow Zone\"),\n",
+							"    (166, \"Manhattan\", \"Morningside Heights\", \"Boro Zone\"),\n",
+							"    (168, \"Bronx\", \"Mott Haven/Port Morris\", \"Boro Zone\"),\n",
+							"    (170, \"Manhattan\", \"Murray Hill\", \"Yellow Zone\"),\n",
+							"    (181, \"Brooklyn\", \"Park Slope\", \"Boro Zone\"),\n",
+							"    (186, \"Manhattan\", \"Penn Station/Madison Sq West\", \"Yellow Zone\"),\n",
+							"    (230, \"Manhattan\", \"Times Sq/Theatre District\", \"Yellow Zone\"),\n",
+							"    (236, \"Manhattan\", \"Upper East Side North\", \"Yellow Zone\"),\n",
+							"    (237, \"Manhattan\", \"Upper East Side South\", \"Yellow Zone\"),\n",
+							"    (238, \"Manhattan\", \"Upper West Side North\", \"Yellow Zone\"),\n",
+							"    (239, \"Manhattan\", \"Upper West Side South\", \"Yellow Zone\"),\n",
+							"    (244, \"Manhattan\", \"Washington Heights South\", \"Boro Zone\"),\n",
+							"    (247, \"Bronx\", \"West Concourse\", \"Boro Zone\"),\n",
+							"    (255, \"Brooklyn\", \"Williamsburg (North Side)\", \"Boro Zone\"),\n",
+							"    (256, \"Brooklyn\", \"Williamsburg (South Side)\", \"Boro Zone\"),\n",
+							"    (260, \"Queens\", \"Woodside\", \"Boro Zone\"),\n",
+							"]\n",
+							"zone_by_id = {z[0]: z for z in zones}\n",
+							"yellow_zone_ids = [z[0] for z in zones if z[3] == \"Yellow Zone\"]\n",
+							"boro_zone_ids = [z[0] for z in zones if z[3] == \"Boro Zone\"]\n",
+							"outer_zone_ids = [z[0] for z in zones if z[3] in (\"Boro Zone\", \"Airports\")]\n",
+							"all_zone_ids = [z[0] for z in zones]\n",
+							"JFK, LGA, EWR = 132, 138, 1\n",
+							"CONGESTION_START = datetime(2019, 2, 1)\n",
+							"\n",
+							"\n",
+							"def money(x):\n",
+							"    return f\"{x:.2f}\"\n",
+							"\n",
+							"\n",
+							"def touches_congestion_zone(pu, do):\n",
+							"    return zone_by_id[pu][3] == \"Yellow Zone\" or zone_by_id[do][3] == \"Yellow Zone\"\n",
+							"\n",
+							"\n",
+							"def pick_zones(cab_type):\n",
+							"    if cab_type == \"green\":\n",
+							"        pu = rnd.choice(boro_zone_ids)  # green cabs cannot pick up in Manhattan's Yellow Zone or at airports\n",
+							"    else:\n",
+							"        pu = rnd.choice(yellow_zone_ids) if rnd.random() < 0.85 else rnd.choice([JFK, LGA] + outer_zone_ids)\n",
+							"    r = rnd.random()\n",
+							"    if r < 0.05:\n",
+							"        do = JFK\n",
+							"    elif r < 0.08:\n",
+							"        do = LGA\n",
+							"    elif r < 0.09:\n",
+							"        do = EWR\n",
+							"    else:\n",
+							"        do = rnd.choice(all_zone_ids)\n",
+							"    return pu, do\n",
+							"\n",
+							"\n",
+							"def make_trip(cab_type):\n",
+							"    pu, do = pick_zones(cab_type)\n",
+							"    pickup = datetime(2019, 1, 1) + timedelta(minutes=rnd.randint(0, 60 * 24 * 90 - 1))\n",
+							"\n",
+							"    manhattan_jfk = JFK in (pu, do) and \"Manhattan\" in (zone_by_id[pu][1], zone_by_id[do][1])\n",
+							"    if manhattan_jfk:\n",
+							"        rate_code, distance = 2, rnd.uniform(15.0, 21.0)\n",
+							"    elif EWR in (pu, do):\n",
+							"        rate_code, distance = 3, rnd.uniform(14.0, 24.0)\n",
+							"    elif rnd.random() < 0.01:\n",
+							"        rate_code, distance = 5, rnd.uniform(2.0, 15.0)\n",
+							"    else:\n",
+							"        rate_code = 1\n",
+							"        distance = rnd.uniform(8.0, 14.0) if LGA in (pu, do) or JFK in (pu, do) else rnd.uniform(0.4, 9.0)\n",
+							"    distance = round(distance, 2)\n",
+							"\n",
+							"    speed_mph = rnd.uniform(7.0, 22.0)\n",
+							"    minutes = max(2, round(distance / speed_mph * 60))\n",
+							"    dropoff = pickup + timedelta(minutes=minutes)\n",
+							"\n",
+							"    meter = round((2.5 + 2.5 * distance + 0.35 * minutes) * 2) / 2\n",
+							"    if rate_code == 2:\n",
+							"        fare = 52.0\n",
+							"    elif rate_code == 3:\n",
+							"        fare = meter + 17.5\n",
+							"    elif rate_code == 5:\n",
+							"        fare = float(rnd.randint(20, 80))\n",
+							"    else:\n",
+							"        fare = meter\n",
+							"\n",
+							"    hour = pickup.hour\n",
+							"    if hour >= 20 or hour < 6:\n",
+							"        extra = 0.5\n",
+							"    elif 16 <= hour < 20 and pickup.weekday() < 5:\n",
+							"        extra = 1.0\n",
+							"    else:\n",
+							"        extra = 0.0\n",
+							"    mta_tax, improvement = 0.5, 0.3\n",
+							"    tolls = 5.76 if rate_code in (2, 3) and rnd.random() < 0.6 else 0.0\n",
+							"    congestion = 2.75 if pickup >= CONGESTION_START and touches_congestion_zone(pu, do) else 0.0\n",
+							"\n",
+							"    payment_type = rnd.choices([1, 2, 3, 4], weights=[65, 32, 2, 1])[0]\n",
+							"    tip = round((fare + extra) * rnd.choice([0.0, 0.15, 0.2, 0.25]), 2) if payment_type == 1 else 0.0\n",
+							"    total = fare + extra + mta_tax + tip + tolls + improvement + congestion\n",
+							"\n",
+							"    row = {\n",
+							"        \"VendorID\": str(rnd.choice([1, 2])),\n",
+							"        \"lpep_pickup_datetime\": pickup.strftime(\"%Y-%m-%d %H:%M:%S\"),\n",
+							"        \"lpep_dropoff_datetime\": dropoff.strftime(\"%Y-%m-%d %H:%M:%S\"),\n",
+							"        \"store_and_fwd_flag\": \"Y\" if rnd.random() < 0.01 else \"N\",\n",
+							"        \"RatecodeID\": str(rate_code),\n",
+							"        \"PULocationID\": str(pu),\n",
+							"        \"DOLocationID\": str(do),\n",
+							"        \"passenger_count\": str(rnd.choices([1, 2, 3, 4, 5, 6], weights=[70, 15, 5, 2, 5, 3])[0]),\n",
+							"        \"trip_distance\": money(distance),\n",
+							"        \"fare_amount\": money(fare),\n",
+							"        \"extra\": money(extra),\n",
+							"        \"mta_tax\": money(mta_tax),\n",
+							"        \"tip_amount\": money(tip),\n",
+							"        \"tolls_amount\": money(tolls),\n",
+							"        \"ehail_fee\": \"\",\n",
+							"        \"improvement_surcharge\": money(improvement),\n",
+							"        \"total_amount\": money(total),\n",
+							"        \"payment_type\": str(payment_type),\n",
+							"        \"trip_type\": \"2\" if rnd.random() < 0.03 else \"1\",\n",
+							"        \"congestion_surcharge\": money(congestion),\n",
+							"    }\n",
+							"\n",
+							"    # ~1% missing pickup time, ~1% negative fare (bad meter reading) -> removed by JBD_Process_Cab_Data\n",
+							"    r = rnd.random()\n",
+							"    if r < 0.01:\n",
+							"        row[\"lpep_pickup_datetime\"] = \"\"\n",
+							"    elif r < 0.02:\n",
+							"        row[\"fare_amount\"] = money(-fare)\n",
+							"        row[\"total_amount\"] = money(-total)\n",
+							"\n",
+							"    if cab_type == \"yellow\":\n",
+							"        row.pop(\"ehail_fee\")\n",
+							"        row.pop(\"trip_type\")\n",
+							"    return row\n",
+							"\n",
+							"\n",
+							"def make_trips(cab_type):\n",
+							"    trips = [make_trip(cab_type) for _ in range(num_trips)]\n",
+							"    # ~1% exact duplicates (double-submitted records) -> removed by dropDuplicates in JBD_Process_Cab_Data\n",
+							"    trips += [dict(trips[i]) for i in rnd.sample(range(num_trips), num_trips // 100)]\n",
+							"    return trips\n",
+							"\n",
+							"\n",
+							"green = make_trips(\"green\")\n",
+							"yellow = make_trips(\"yellow\")\n",
+							"\n",
+							"green_df = spark.createDataFrame(green).select(list(green[0].keys()))\n",
+							"yellow_df = spark.createDataFrame(yellow).select(list(yellow[0].keys()))\n",
+							"zones_df = spark.createDataFrame(\n",
+							"    [(str(z[0]), z[1], z[2], z[3]) for z in zones], [\"LocationID\", \"Borough\", \"Zone\", \"service_zone\"]\n",
+							")\n",
+							"\n",
+							"green_df.coalesce(1).write.mode(\"overwrite\").option(\"header\", \"true\").csv(base + \"/raw/green\")\n",
+							"yellow_df.coalesce(1).write.mode(\"overwrite\").option(\"header\", \"true\").csv(base + \"/raw/yellow\")\n",
+							"zones_df.coalesce(1).write.mode(\"overwrite\").option(\"header\", \"true\").csv(base + \"/raw/taxi_zone_lookup\")\n",
+							"\n",
+							"print(f\"Raw data written to {base}/raw: green={len(green)}, yellow={len(yellow)}, zones={len(zones)}\")"
+						],
+						"outputs": []
+					}
+				]
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/NB_Read_Raw_Data')]",
+			"type": "Microsoft.Synapse/workspaces/notebooks",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "SparkAssessment"
+				},
+				"nbformat": 4,
+				"nbformat_minor": 5,
+				"bigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"sessionProperties": {
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2,
+					"runAsWorkspaceSystemIdentity": false,
+					"conf": {}
+				},
+				"metadata": {
+					"language_info": {
+						"name": "python"
+					}
+				},
+				"cells": [
+					{
+						"cell_type": "code",
+						"source": [
+							"# Generate migration-test source data.\n",
+							"storage = \"abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net\"\n",
+							"\n",
+							"customers = [\n",
+							"    (\"C001\", \"Asha\", \"Hyderabad\"),\n",
+							"    (\"C002\", \"Ravi\", \"Vijayawada\"),\n",
+							"    (\"C003\", \"Priya\", \"Bengaluru\"),\n",
+							"    (\"C004\", \"Arjun\", \"Chennai\")\n",
+							"]\n",
+							"\n",
+							"sales = [\n",
+							"    (\"S001\", \"C001\", \"Laptop\", 65000),\n",
+							"    (\"S002\", \"C002\", \"Phone\", 30000),\n",
+							"    (\"S003\", \"C001\", \"Monitor\", 18000),\n",
+							"    (\"S004\", \"C003\", \"Keyboard\", 2500),\n",
+							"    (\"S005\", \"C004\", \"Laptop\", 72000)\n",
+							"]\n",
+							"\n",
+							"customers_df = spark.createDataFrame(\n",
+							"    customers,\n",
+							"    [\"CustomerId\", \"CustomerName\", \"City\"]\n",
+							")\n",
+							"\n",
+							"sales_df = spark.createDataFrame(\n",
+							"    sales,\n",
+							"    [\"SaleId\", \"CustomerId\", \"Product\", \"Amount\"]\n",
+							")\n",
+							"\n",
+							"customers_df.coalesce(1).write.mode(\"overwrite\").option(\"header\", \"true\").csv(\n",
+							"    storage + \"/migration-test/csv/customers\"\n",
+							")\n",
+							"\n",
+							"sales_df.coalesce(1).write.mode(\"overwrite\").option(\"header\", \"true\").csv(\n",
+							"    storage + \"/migration-test/csv/sales\"\n",
+							")\n",
+							"\n",
+							"customers_df.coalesce(1).write.mode(\"overwrite\").parquet(\n",
+							"    storage + \"/migration-test/parquet/customers\"\n",
+							")\n",
+							"\n",
+							"sales_df.coalesce(1).write.mode(\"overwrite\").parquet(\n",
+							"    storage + \"/migration-test/parquet/sales\"\n",
+							")\n",
+							"\n",
+							"print(\"Migration test CSV and Parquet data created successfully.\")\n"
+						],
+						"outputs": []
+					}
+				]
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/NB_Transform_Cab_Data')]",
+			"type": "Microsoft.Synapse/workspaces/notebooks",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "SparkAssessment"
+				},
+				"nbformat": 4,
+				"nbformat_minor": 5,
+				"bigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"sessionProperties": {
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2,
+					"runAsWorkspaceSystemIdentity": false,
+					"conf": {}
+				},
+				"metadata": {
+					"language_info": {
+						"name": "python"
+					}
+				},
+				"cells": [
+					{
+						"cell_type": "code",
+						"source": [
+							"# Read Parquet and create a transformed dataset.\n",
+							"storage = \"abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net\"\n",
+							"\n",
+							"sales_df = spark.read.parquet(\n",
+							"    storage + \"/migration-test/parquet/sales\"\n",
+							")\n",
+							"\n",
+							"customers_df = spark.read.parquet(\n",
+							"    storage + \"/migration-test/parquet/customers\"\n",
+							")\n",
+							"\n",
+							"result = (\n",
+							"    sales_df.join(customers_df, \"CustomerId\", \"left\")\n",
+							"    .groupBy(\"City\", \"Product\")\n",
+							"    .sum(\"Amount\")\n",
+							"    .withColumnRenamed(\"sum(Amount)\", \"TotalAmount\")\n",
+							")\n",
+							"\n",
+							"display(result)\n",
+							"\n",
+							"result.write.mode(\"overwrite\").parquet(\n",
+							"    storage + \"/migration-test/processed/sales_by_city_product\"\n",
+							")\n",
+							"\n",
+							"print(\"Transformation completed.\")\n"
+						],
+						"outputs": []
+					}
+				]
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/NB_Validate_Cab_Outputs')]",
+			"type": "Microsoft.Synapse/workspaces/notebooks",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"folder": {
+					"name": "Ingestion"
+				},
+				"nbformat": 4,
+				"nbformat_minor": 2,
+				"bigDataPool": {
+					"referenceName": "transportation",
+					"type": "BigDataPoolReference"
+				},
+				"sessionProperties": {
+					"driverMemory": "28g",
+					"driverCores": 4,
+					"executorMemory": "28g",
+					"executorCores": 4,
+					"numExecutors": 2,
+					"runAsWorkspaceSystemIdentity": false,
+					"conf": {}
+				},
+				"metadata": {
+					"language_info": {
+						"name": "python"
+					}
+				},
+				"cells": [
+					{
+						"cell_type": "code",
+						"metadata": {
+							"tags": [
+								"parameters"
+							]
+						},
+						"source": [
+							"storage_account = \"externalstgaccmigration\"\n",
+							"container = \"migrationcontainer\""
+						],
+						"outputs": []
+					},
+					{
+						"cell_type": "code",
+						"source": [
+							"# Validate the Spark outputs of PL_Cab_Data_Ingestion: curated trips and daily summary must reconcile.\n",
+							"import json\n",
+							"from pyspark.sql import functions as F\n",
+							"\n",
+							"base = f\"abfss://{container}@{storage_account}.dfs.core.windows.net/migration-test/nyccab\"\n",
+							"\n",
+							"green = spark.read.parquet(base + \"/curated/green\")\n",
+							"yellow = spark.read.parquet(base + \"/curated/yellow\")\n",
+							"summary = spark.read.parquet(base + \"/summary/daily_trip_summary\")\n",
+							"\n",
+							"curated_rows = green.count() + yellow.count()\n",
+							"summary_trips = summary.agg(F.sum(\"TripCount\")).collect()[0][0] or 0\n",
+							"null_pickups = green.filter(F.col(\"lpep_pickup_datetime\").isNull()).count() + \\\n",
+							"               yellow.filter(F.col(\"lpep_pickup_datetime\").isNull()).count()\n",
+							"\n",
+							"result = {\n",
+							"    \"curated_rows\": curated_rows,\n",
+							"    \"summary_trips\": int(summary_trips),\n",
+							"    \"null_pickups\": null_pickups,\n",
+							"}\n",
+							"print(result)\n",
+							"\n",
+							"errors = []\n",
+							"if curated_rows == 0:\n",
+							"    errors.append(\"curated data is empty\")\n",
+							"if curated_rows != summary_trips:\n",
+							"    errors.append(f\"summary trips {summary_trips} != curated rows {curated_rows}\")\n",
+							"if null_pickups:\n",
+							"    errors.append(f\"{null_pickups} curated rows have null pickup time\")\n",
+							"if errors:\n",
+							"    raise ValueError(\"Validation failed: \" + \"; \".join(errors))\n",
+							"\n",
+							"mssparkutils.notebook.exit(json.dumps(result))"
+						],
+						"outputs": []
+					}
+				]
+			},
+			"dependsOn": []
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/transportation')]",
+			"type": "Microsoft.Synapse/workspaces/bigDataPools",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"autoPause": {
+					"enabled": true,
+					"delayInMinutes": 5
+				},
+				"autoScale": {
+					"enabled": true,
+					"maxNodeCount": 3,
+					"minNodeCount": 3
+				},
+				"nodeCount": 10,
+				"nodeSize": "Small",
+				"nodeSizeFamily": "MemoryOptimized",
+				"sparkVersion": "3.5",
+				"isComputeIsolationEnabled": false,
+				"sessionLevelPackagesEnabled": false,
+				"annotations": []
+			},
+			"dependsOn": [],
+			"location": "centralindia"
+		},
+		{
+			"name": "[concat(parameters('workspaceName'), '/transportationdedicated')]",
+			"type": "Microsoft.Synapse/workspaces/sqlPools",
+			"apiVersion": "2019-06-01-preview",
+			"properties": {
+				"collation": "SQL_Latin1_General_CP1_CI_AS",
+				"maxSizeBytes": 263882790666240,
+				"annotations": []
+			},
+			"dependsOn": [],
+			"location": "centralindia"
+		}
+	]
+}
