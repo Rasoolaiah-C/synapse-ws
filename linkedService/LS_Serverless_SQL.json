@@ -1,0 +1,16 @@
+{
+	"name": "LS_Serverless_SQL",
+	"type": "Microsoft.Synapse/workspaces/linkedservices",
+	"properties": {
+		"description": "Built-in serverless SQL pool of transportationmigration (workspace managed identity).",
+		"annotations": [],
+		"type": "AzureSqlDW",
+		"typeProperties": {
+			"connectionString": "Data Source=tcp:transportationmigration-ondemand.sql.azuresynapse.net,1433;Initial Catalog=master"
+		},
+		"connectVia": {
+			"referenceName": "AutoResolveIntegrationRuntime",
+			"type": "IntegrationRuntimeReference"
+		}
+	}
+}

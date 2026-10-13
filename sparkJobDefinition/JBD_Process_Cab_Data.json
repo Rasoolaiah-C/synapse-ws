@@ -1,0 +1,40 @@
+{
+	"name": "JBD_Process_Cab_Data",
+	"properties": {
+		"description": "Cleans raw green/yellow cab trip CSVs into curated Parquet (stage-table column order) plus the taxi zone lookup.",
+		"folder": {
+			"name": "Ingestion"
+		},
+		"targetBigDataPool": {
+			"referenceName": "transportation",
+			"type": "BigDataPoolReference"
+		},
+		"requiredSparkVersion": "3.5",
+		"language": "python",
+		"scanFolder": false,
+		"jobProperties": {
+			"name": "JBD_Process_Cab_Data",
+			"file": "abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net/jobs/process_cab_data.py",
+			"conf": {
+				"spark.dynamicAllocation.enabled": "false",
+				"spark.dynamicAllocation.minExecutors": "2",
+				"spark.dynamicAllocation.maxExecutors": "2"
+			},
+			"args": [
+				"--storage-account",
+				"externalstgaccmigration",
+				"--container",
+				"migrationcontainer"
+			],
+			"jars": [],
+			"pyFiles": [],
+			"files": [],
+			"archives": [],
+			"driverMemory": "28g",
+			"driverCores": 4,
+			"executorMemory": "28g",
+			"executorCores": 4,
+			"numExecutors": 2
+		}
+	}
+}

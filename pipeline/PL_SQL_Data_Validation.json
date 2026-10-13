@@ -1,0 +1,287 @@
+{
+	"name": "PL_SQL_Data_Validation",
+	"properties": {
+		"description": "Validate row counts and connectivity across TransportDW staging and warehouse tables.",
+		"activities": [
+			{
+				"name": "Validate_Stage_Green",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": "SELECT COUNT_BIG(*) AS GreenRowCount FROM [stage].[NYCCabTrip_Green]",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_NYCCabTrip_Green",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "Validate_Stage_Yellow",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Validate_Stage_Green",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": "SELECT COUNT_BIG(*) AS YellowRowCount FROM [stage].[NYCCabTrip_Yellow]",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_NYCCabTrip_Yellow",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "Validate_Fact",
+				"type": "Lookup",
+				"dependsOn": [
+					{
+						"activity": "Validate_Stage_Yellow",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.01:00:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "AzureSqlSource",
+						"sqlReaderQuery": "SELECT COUNT_BIG(*) AS FactRowCount FROM [dw].[FactCabTrip]",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_FactCabTrip",
+						"type": "DatasetReference"
+					},
+					"firstRowOnly": true
+				}
+			},
+			{
+				"name": "Validate_All_Tables",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Validate_Fact",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@pipeline().parameters.TableList",
+						"type": "Expression"
+					},
+					"isSequential": false,
+					"batchCount": 4,
+					"activities": [
+						{
+							"name": "Count_Table_Rows",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.00:30:00",
+								"retry": 1,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SqlDWSource",
+									"sqlReaderQuery": {
+										"value": "@concat('SELECT COUNT_BIG(*) AS [RowCount] FROM [', item().schema, '].[', item().table, ']')",
+										"type": "Expression"
+									},
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "DS_SQL_DynamicTable",
+									"type": "DatasetReference",
+									"parameters": {
+										"SchemaName": {
+											"value": "@item().schema",
+											"type": "Expression"
+										},
+										"TableName": {
+											"value": "@item().table",
+											"type": "Expression"
+										}
+									}
+								},
+								"firstRowOnly": true
+							}
+						},
+						{
+							"name": "Log_Table_Row_Count",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "Count_Table_Rows",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.00:30:00",
+								"retry": 1,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[operation].[usp_LogPipelineRun]",
+								"storedProcedureParameters": {
+									"PipelineName": {
+										"value": {
+											"value": "@pipeline().Pipeline",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"PipelineRunId": {
+										"value": {
+											"value": "@pipeline().RunId",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"ActivityName": {
+										"value": {
+											"value": "@concat('RowCount:', item().schema, '.', item().table)",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"RunStatus": {
+										"value": "Succeeded",
+										"type": "String"
+									},
+									"RunMessage": {
+										"value": {
+											"value": "@string(activity('Count_Table_Rows').output.firstRow.RowCount)",
+											"type": "Expression"
+										},
+										"type": "String"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+								"type": "LinkedServiceReference",
+								"parameters": {
+									"DBName": "transportationdedicated"
+								}
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"TableList": {
+				"type": "array",
+				"defaultValue": [
+					{
+						"schema": "stage",
+						"table": "NYCCabTrip_Green"
+					},
+					{
+						"schema": "stage",
+						"table": "NYCCabTrip_Yellow"
+					},
+					{
+						"schema": "stage",
+						"table": "TaxiZoneLookup"
+					},
+					{
+						"schema": "dw",
+						"table": "DimCabType"
+					},
+					{
+						"schema": "dw",
+						"table": "DimLocation"
+					},
+					{
+						"schema": "dw",
+						"table": "DimPaymentType"
+					},
+					{
+						"schema": "dw",
+						"table": "DimRate"
+					},
+					{
+						"schema": "dw",
+						"table": "DimTripType"
+					},
+					{
+						"schema": "dw",
+						"table": "DimVendor"
+					},
+					{
+						"schema": "dw",
+						"table": "FactCabTrip"
+					},
+					{
+						"schema": "dw",
+						"table": "SalesByCityProduct"
+					},
+					{
+						"schema": "operation",
+						"table": "MetadataTableControl"
+					}
+				]
+			}
+		},
+		"folder": {
+			"name": "Validation"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW",
+			"Validation"
+		],
+		"lastPublishTime": "2026-10-06T11:16:47Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}

@@ -1,0 +1,86 @@
+{
+	"name": "PL_Validation",
+	"properties": {
+		"activities": [
+			{
+				"name": "Validation_Checkpoint",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_CabDataValidation]"
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			},
+			{
+				"name": "Validate_Fact_Reconciliation",
+				"type": "SqlServerStoredProcedure",
+				"dependsOn": [
+					{
+						"activity": "Validation_Checkpoint",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"storedProcedureName": "[operation].[usp_ValidateFactLoad]",
+					"storedProcedureParameters": {
+						"PipelineName": {
+							"value": {
+								"value": "@pipeline().Pipeline",
+								"type": "Expression"
+							},
+							"type": "String"
+						},
+						"PipelineRunId": {
+							"value": {
+								"value": "@pipeline().RunId",
+								"type": "Expression"
+							},
+							"type": "String"
+						}
+					}
+				},
+				"linkedServiceName": {
+					"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+					"type": "LinkedServiceReference",
+					"parameters": {
+						"DBName": "transportationdedicated"
+					}
+				}
+			}
+		],
+		"folder": {
+			"name": "Validation"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW",
+			"Validation"
+		],
+		"lastPublishTime": "2026-10-06T11:16:49Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}

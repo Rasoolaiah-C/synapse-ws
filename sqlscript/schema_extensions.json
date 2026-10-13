@@ -1,0 +1,20 @@
+{
+	"name": "schema_extensions",
+	"properties": {
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"content": {
+			"query": "-- Tables added for PL_Cab_Data_Ingestion (run log + taxi zone staging).\nIF OBJECT_ID('operation.PipelineRunLog') IS NULL\nCREATE TABLE operation.PipelineRunLog\n(\n    PipelineName   varchar(200)  NOT NULL,\n    PipelineRunId  varchar(100)  NOT NULL,\n    ActivityName   varchar(200)  NULL,\n    RunStatus      varchar(20)   NOT NULL,\n    RunMessage     varchar(4000) NULL,\n    LoggedAtUtc    datetime2     NOT NULL\n)\nWITH (DISTRIBUTION = ROUND_ROBIN, HEAP);\nGO\n\n-- Target of PL_Spark_Test Copy activity (DS_Processed_Sales_By_City_Product -> DS_SQL_DynamicTable).\nIF OBJECT_ID('dw.SalesByCityProduct') IS NULL\nCREATE TABLE dw.SalesByCityProduct\n(\n    City         varchar(100) NULL,\n    Product      varchar(100) NULL,\n    TotalAmount  bigint       NULL\n)\nWITH (DISTRIBUTION = REPLICATE, CLUSTERED INDEX (City, Product));\nGO\n\nIF OBJECT_ID('stage.TaxiZoneLookup') IS NULL\nCREATE TABLE stage.TaxiZoneLookup\n(\n    LocationID    varchar(8000),\n    Borough       varchar(8000),\n    Zone          varchar(8000),\n    service_zone  varchar(8000)\n)\nWITH (DISTRIBUTION = ROUND_ROBIN, HEAP);\nGO\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "transportationdedicated",
+				"poolName": "transportationdedicated"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}

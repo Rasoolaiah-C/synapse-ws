@@ -1,0 +1,77 @@
+{
+	"name": "PL_Serverless_Test",
+	"properties": {
+		"description": "Serverless SQL assessment: OPENROWSET over the CSV and Parquet sales files produced by PL_Spark_Test; fails if they do not reconcile.",
+		"activities": [
+			{
+				"name": "Serverless_Assessment",
+				"type": "Script",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.00:30:00",
+					"retry": 1,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"linkedServiceName": {
+					"referenceName": "LS_Serverless_SQL",
+					"type": "LinkedServiceReference"
+				},
+				"typeProperties": {
+					"scripts": [
+						{
+							"type": "Query",
+							"text": "SELECT 'CSV' AS TestType, COUNT(*) AS [RowCount]\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/csv/sales/*.csv',\n    FORMAT = 'CSV', PARSER_VERSION = '2.0', HEADER_ROW = TRUE\n) AS rows\nUNION ALL\nSELECT 'PARQUET', COUNT(*)\nFROM OPENROWSET(\n    BULK 'https://externalstgaccmigration.dfs.core.windows.net/migrationcontainer/migration-test/parquet/sales/*.parquet',\n    FORMAT = 'PARQUET'\n) AS rows;"
+						}
+					],
+					"scriptBlockExecutionTimeout": "00:30:00"
+				}
+			},
+			{
+				"name": "Check_Serverless_Counts",
+				"type": "IfCondition",
+				"dependsOn": [
+					{
+						"activity": "Serverless_Assessment",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"expression": {
+						"value": "@and(equals(activity('Serverless_Assessment').output.resultSets[0].rows[0].RowCount, activity('Serverless_Assessment').output.resultSets[0].rows[1].RowCount), greater(activity('Serverless_Assessment').output.resultSets[0].rows[0].RowCount, 0))",
+						"type": "Expression"
+					},
+					"ifFalseActivities": [
+						{
+							"name": "Fail_Serverless_Mismatch",
+							"type": "Fail",
+							"dependsOn": [],
+							"userProperties": [],
+							"typeProperties": {
+								"message": {
+									"value": "@concat('Serverless CSV/Parquet counts do not reconcile: ', string(activity('Serverless_Assessment').output.resultSets[0].rows))",
+									"type": "Expression"
+								},
+								"errorCode": "400"
+							}
+						}
+					]
+				}
+			}
+		],
+		"folder": {
+			"name": "Assessment"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"ServerlessAssessment"
+		],
+		"lastPublishTime": "2026-10-06T11:16:34Z"
+	},
+	"type": "Microsoft.Synapse/workspaces/pipelines"
+}

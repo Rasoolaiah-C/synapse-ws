@@ -1,0 +1,27 @@
+{
+	"name": "DS_SQL_FactCabTrip",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"DBName": "transportationdedicated"
+			}
+		},
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"TransportDW",
+			"DedicatedSQL"
+		],
+		"type": "AzureSqlDWTable",
+		"schema": [],
+		"typeProperties": {
+			"schema": "dw",
+			"table": "FactCabTrip"
+		}
+	},
+	"type": "Microsoft.Synapse/workspaces/datasets"
+}

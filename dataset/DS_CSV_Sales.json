@@ -1,0 +1,44 @@
+{
+	"name": "DS_CSV_Sales",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "LS_ADLS_externalstgaccmigration",
+			"type": "LinkedServiceReference"
+		},
+		"folder": {
+			"name": "Storage"
+		},
+		"annotations": [],
+		"type": "DelimitedText",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobFSLocation",
+				"folderPath": "migration-test/csv/sales",
+				"fileSystem": "migrationcontainer"
+			},
+			"columnDelimiter": ",",
+			"escapeChar": "\\",
+			"firstRowAsHeader": true,
+			"quoteChar": "\""
+		},
+		"schema": [
+			{
+				"name": "SaleId",
+				"type": "String"
+			},
+			{
+				"name": "CustomerId",
+				"type": "String"
+			},
+			{
+				"name": "Product",
+				"type": "String"
+			},
+			{
+				"name": "Amount",
+				"type": "Int64"
+			}
+		]
+	},
+	"type": "Microsoft.Synapse/workspaces/datasets"
+}

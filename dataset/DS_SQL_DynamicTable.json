@@ -1,0 +1,41 @@
+{
+	"name": "DS_SQL_DynamicTable",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "transportationmigration-WorkspaceDefaultSqlServer",
+			"type": "LinkedServiceReference",
+			"parameters": {
+				"DBName": "transportationdedicated"
+			}
+		},
+		"parameters": {
+			"SchemaName": {
+				"type": "string"
+			},
+			"TableName": {
+				"type": "string"
+			}
+		},
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"annotations": [
+			"MigrationAccelerator",
+			"ParameterizedDataset",
+			"DynamicSQL"
+		],
+		"type": "AzureSqlDWTable",
+		"schema": [],
+		"typeProperties": {
+			"schema": {
+				"value": "@dataset().SchemaName",
+				"type": "Expression"
+			},
+			"table": {
+				"value": "@dataset().TableName",
+				"type": "Expression"
+			}
+		}
+	},
+	"type": "Microsoft.Synapse/workspaces/datasets"
+}

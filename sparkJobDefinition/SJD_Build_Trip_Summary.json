@@ -1,0 +1,40 @@
+{
+	"name": "SJD_Build_Trip_Summary",
+	"properties": {
+		"description": "Builds a daily trip summary (cab type x pickup borough) from curated cab trip Parquet.",
+		"folder": {
+			"name": "Ingestion"
+		},
+		"targetBigDataPool": {
+			"referenceName": "transportation",
+			"type": "BigDataPoolReference"
+		},
+		"requiredSparkVersion": "3.5",
+		"language": "python",
+		"scanFolder": false,
+		"jobProperties": {
+			"name": "SJD_Build_Trip_Summary",
+			"file": "abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net/jobs/build_trip_summary.py",
+			"conf": {
+				"spark.dynamicAllocation.enabled": "false",
+				"spark.dynamicAllocation.minExecutors": "2",
+				"spark.dynamicAllocation.maxExecutors": "2"
+			},
+			"args": [
+				"--storage-account",
+				"externalstgaccmigration",
+				"--container",
+				"migrationcontainer"
+			],
+			"jars": [],
+			"pyFiles": [],
+			"files": [],
+			"archives": [],
+			"driverMemory": "28g",
+			"driverCores": 4,
+			"executorMemory": "28g",
+			"executorCores": 4,
+			"numExecutors": 2
+		}
+	}
+}

@@ -1,0 +1,20 @@
+{
+	"name": "external_tables",
+	"properties": {
+		"folder": {
+			"name": "DedicatedSQL"
+		},
+		"content": {
+			"query": "IF NOT EXISTS (SELECT 1 FROM sys.symmetric_keys WHERE name = '##MS_DatabaseMasterKey##')\n    CREATE MASTER KEY;\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'SynapseManagedIdentity')\n    CREATE DATABASE SCOPED CREDENTIAL [SynapseManagedIdentity] WITH IDENTITY = 'Managed Service Identity';\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.external_file_formats WHERE name = 'SynapseParquetFormat')\n    CREATE EXTERNAL FILE FORMAT [SynapseParquetFormat] WITH (FORMAT_TYPE = PARQUET);\nGO\n\nIF NOT EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'transportdw_externalstgaccmigration_dfs_core_windows')\n    CREATE EXTERNAL DATA SOURCE [transportdw_externalstgaccmigration_dfs_core_windows]\n    WITH (\n        LOCATION = 'abfss://migrationcontainer@externalstgaccmigration.dfs.core.windows.net',\n        TYPE = HADOOP,\n        CREDENTIAL = [SynapseManagedIdentity]\n    );\nGO\n\nIF OBJECT_ID('stage.External_NYCCabTrip_Green') IS NULL\nCREATE EXTERNAL TABLE stage.External_NYCCabTrip_Green (\n\t[VendorID] varchar(8000), [lpep_pickup_datetime] varchar(8000), [lpep_dropoff_datetime] varchar(8000),\n\t[store_and_fwd_flag] varchar(8000), [RatecodeID] varchar(8000), [PULocationID] varchar(8000),\n\t[DOLocationID] varchar(8000), [passenger_count] varchar(8000), [trip_distance] varchar(8000),\n\t[fare_amount] varchar(8000), [extra] varchar(8000), [mta_tax] varchar(8000), [tip_amount] varchar(8000),\n\t[tolls_amount] varchar(8000), [ehail_fee] varchar(8000), [improvement_surcharge] varchar(8000),\n\t[total_amount] varchar(8000), [payment_type] varchar(8000), [trip_type] varchar(8000),\n\t[congestion_surcharge] varchar(8000)\n)\nWITH (\n\tLOCATION = 'migration-test/nyccab/curated/green',\n\tDATA_SOURCE = [transportdw_externalstgaccmigration_dfs_core_windows],\n\tFILE_FORMAT = [SynapseParquetFormat],\n\tREJECT_TYPE = VALUE,\n\tREJECT_VALUE = 0\n);\nGO\n\nIF OBJECT_ID('stage.External_NYCCabTrip_Yellow') IS NULL\nCREATE EXTERNAL TABLE stage.External_NYCCabTrip_Yellow (\n    VendorID varchar(8000), lpep_pickup_datetime varchar(8000), lpep_dropoff_datetime varchar(8000),\n    passenger_count varchar(8000), trip_distance varchar(8000), RatecodeID varchar(8000),\n    store_and_fwd_flag varchar(8000), PULocationID varchar(8000), DOLocationID varchar(8000),\n    payment_type varchar(8000), fare_amount varchar(8000), extra varchar(8000), mta_tax varchar(8000),\n    tip_amount varchar(8000), tolls_amount varchar(8000), improvement_surcharge varchar(8000),\n    total_amount varchar(8000), congestion_surcharge varchar(8000)\n)\nWITH (\n\tLOCATION = 'migration-test/nyccab/curated/yellow',\n\tDATA_SOURCE = [transportdw_externalstgaccmigration_dfs_core_windows],\n\tFILE_FORMAT = [SynapseParquetFormat],\n\tREJECT_TYPE = VALUE,\n\tREJECT_VALUE = 0\n);\nGO\n",
+			"metadata": {
+				"language": "sql"
+			},
+			"currentConnection": {
+				"databaseName": "transportationdedicated",
+				"poolName": "transportationdedicated"
+			},
+			"resultLimit": 5000
+		},
+		"type": "SqlQuery"
+	}
+}
